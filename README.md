@@ -11,6 +11,8 @@ decoding. No audio yet — videos play visually, in-app.
 
 - Arrow keys (←/→/↑/↓), PageUp/PageDown, Home/End to browse
 - Plays and loops videos in-app; `Space` toggles play/pause, drag the progress bar to seek
+- Slideshow mode (`S` or the `▶` button) auto-advances every few seconds; the
+  interval is adjustable with the `⚙` popup or the `--interval` flag
 - Fullscreen shows nothing but the media itself (move the mouse to reveal the video progress bar)
 - Filmstrip of lazy-generated thumbnails (click to jump, `G` to toggle)
 - Zoom with the scroll wheel, drag to pan, double-click / `F` for fullscreen
@@ -56,6 +58,9 @@ OPTIONS:
                          Default: none — imora follows systems that run with
                          window decorations disabled.
     -f, --fullscreen     Start in fullscreen
+    -i, --interval <SECONDS>
+                         Slideshow interval between items (default: 5.0)
+    -s, --slideshow      Start the slideshow automatically
     -h, --help           Print this help
     -v, --version        Print version
 ```
@@ -67,8 +72,9 @@ OPTIONS:
 | `←` `→` `↑` `↓` | Previous / next media                 |
 | `PageUp/Down`  | Jump 10 items                         |
 | `Home` / `End` | First / last item                     |
-| `Space`        | Play / pause video                    |
-| `+` / `-` / `0` | Zoom in / out / reset                |
+| `Space`        | Play / pause video                 |
+| `S`            | Toggle slideshow                   |
+| `+` / `-` / `0` | Zoom in / out / reset            |
 | scroll wheel   | Zoom (over the media area)            |
 | drag           | Pan when zoomed                       |
 | `F` / dbl-click| Toggle fullscreen                    |

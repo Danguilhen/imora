@@ -23,6 +23,9 @@ OPTIONS:
                         Default: none — imora follows systems that run with
                         window decorations disabled.
     -f, --fullscreen    Start in fullscreen
+    -i, --interval <SECONDS>
+                        Slideshow interval between items (default: 5.0)
+    -s, --slideshow     Start the slideshow automatically
     -h, --help          Print this help
     -v, --version       Print version
 ";
@@ -36,6 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut folder: Option<PathBuf> = None;
     let mut fullscreen = false;
     let mut decorations = false;
+    let mut start_slideshow = false;
+    let mut slide_interval: f32 = 5.0;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -51,6 +56,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "-f" | "--fullscreen" => fullscreen = true,
             "-d" | "--decorations" => decorations = true,
+            "-s" | "--slideshow" => start_slideshow = true,
+            "-i" | "--interval" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| "missing value for --interval".to_string())?;
+                slide_interval = raw.parse::<f32>().map_err(|_| {
+                    format!("invalid slideshow interval: {raw}")
+                })?;
+            }
             arg if arg.starts_with('-') => {
                 eprintln!("unknown option: {arg}");
                 eprint!("{HELP}");
@@ -81,7 +96,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "imora",
         options,
-        Box::new(move |cc| Ok(Box::new(app::ImoraApp::new(cc, folder, fullscreen)))),
+        Box::new(move |cc| {
+            Ok(Box::new(app::ImoraApp::new(
+                cc,
+                folder,
+                fullscreen,
+                slide_interval,
+                start_slideshow,
+            )))
+        }),
     )
     .map_err(|e| e.into())
 }

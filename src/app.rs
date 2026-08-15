@@ -95,6 +95,10 @@ pub struct ImoraApp {
     pointer_inside: bool,
     last_activity: Instant,
     first_hint_until: Instant,
+
+    slideshow: bool,
+    slide_interval: f32,
+    slideshow_last: Instant,
 }
 
 struct ThumbEntry {
@@ -107,6 +111,8 @@ impl ImoraApp {
         cc: &eframe::CreationContext<'_>,
         folder: Option<PathBuf>,
         start_fullscreen: bool,
+        slide_interval: f32,
+        start_slideshow: bool,
     ) -> Self {
         setup_style(&cc.egui_ctx);
 
@@ -154,6 +160,9 @@ impl ImoraApp {
             pointer_inside: false,
             last_activity: Instant::now(),
             first_hint_until: Instant::now() + Duration::from_secs(6),
+            slideshow: start_slideshow,
+            slide_interval: slide_interval.clamp(0.5, 3600.0),
+            slideshow_last: Instant::now(),
         };
 
         if let Some(dir) = folder {
@@ -229,6 +238,13 @@ impl ImoraApp {
         self.index = index;
         self.reset_view();
         self.spawn_load();
+        // A manual (or slideshow) jump restarts the slideshow countdown.
+        self.slideshow_last = Instant::now();
+    }
+
+    fn toggle_slideshow(&mut self) {
+        self.slideshow = !self.slideshow;
+        self.slideshow_last = Instant::now();
     }
 
     fn spawn_load(&mut self) {
@@ -290,8 +306,9 @@ impl ImoraApp {
         if ctx.input(|i| i.key_pressed(Key::End)) {
             action = Some(Action::Goto(usize::MAX));
         }
-        // Guard against a focused widget (e.g. a clicked button) swallowing Space.
-        if ctx.input(|i| i.key_pressed(Key::Space) && !i.focused) {
+        // `focused` is the native window's keyboard focus, not a widget's —
+        // buttons consume Space via `consume_key`, so no extra guard needed.
+        if ctx.input(|i| i.key_pressed(Key::Space)) {
             if let Some(Loaded::Video(p)) = &self.loaded {
                 if p.state().playing {
                     p.pause();
@@ -307,6 +324,9 @@ impl ImoraApp {
         }
         if ctx.input(|i| i.key_pressed(Key::G)) {
             self.show_strip = !self.show_strip;
+        }
+        if ctx.input(|i| i.key_pressed(Key::S)) {
+            self.toggle_slideshow();
         }
         if ctx.input(|i| i.key_pressed(Key::O)) {
             self.open_folder_dialog();
@@ -514,6 +534,22 @@ impl ImoraApp {
         self.loaded.is_none()
     }
 
+    fn tick_slideshow(&mut self, ctx: &egui::Context) {
+        if !self.slideshow || self.items.len() <= 1 {
+            return;
+        }
+        let interval = Duration::from_secs_f32(self.slide_interval.max(0.5));
+        let elapsed = self.slideshow_last.elapsed();
+        if elapsed >= interval {
+            self.slideshow_last = Instant::now();
+            self.apply_action(Action::Next);
+        } else {
+            // Wake up in time for the next transition, even if nothing else
+            // is repainting (e.g. a paused video or a still image).
+            ctx.request_repaint_after(interval - elapsed);
+        }
+    }
+
     // ---- drawing ---------------------------------------------------------
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -545,6 +581,40 @@ impl ImoraApp {
                         if ui.button("⌂").on_hover_text("Open folder (O)").clicked() {
                             self.open_folder_dialog();
                         }
+
+                        // Slideshow quick toggle + settings.
+                        let label = if self.slideshow {
+                            format!("⏸  {:.1}s", self.slide_interval)
+                        } else {
+                            format!("▶  {:.1}s", self.slide_interval)
+                        };
+                        let sb = ui.button(label).on_hover_text("Slideshow (S)");
+                        if sb.clicked() {
+                            self.toggle_slideshow();
+                        }
+                        let gb = ui.button("⚙").on_hover_text("Slideshow settings");
+                        egui::Popup::menu(&gb).show(|ui| {
+                            ui.set_min_width(180.0);
+                            ui.label(RichText::new("Interval between items").color(TEXT));
+                            ui.add(
+                                egui::Slider::new(&mut self.slide_interval, 0.5..=60.0)
+                                    .suffix(" s")
+                                    .step_by(0.5),
+                            );
+                            ui.add_space(4.0);
+                            let start = if self.slideshow {
+                                "Stop slideshow"
+                            } else {
+                                "Start slideshow"
+                            };
+                            if ui
+                                .button(RichText::new(start).color(ACCENT))
+                                .clicked()
+                            {
+                                self.toggle_slideshow();
+                                ui.close();
+                            }
+                        });
                     });
                 });
             });
@@ -906,6 +976,8 @@ impl eframe::App for ImoraApp {
         self.tick_animation(ctx, dt);
 
         self.fade = (self.fade + dt / 0.16).min(1.0);
+
+        self.tick_slideshow(ctx);
 
         if self.needs_repaint() {
             ctx.request_repaint_after(Duration::from_millis(16));
