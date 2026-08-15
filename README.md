@@ -17,7 +17,8 @@ decoding. No audio yet — videos play visually, in-app.
 - The video progress bar appears when the mouse moves and fades away after a
   moment of inactivity.
 - Fullscreen shows nothing but the media itself (move the mouse to reveal the video progress bar)
-- Filmstrip of lazy-generated thumbnails (click to jump, `G` to toggle)
+- Filmstrip of lazy-generated thumbnails, hidden by default — press `G` (or the
+  `▤` button) to toggle it (click a thumbnail to jump)
 - Zoom with the scroll wheel, drag to pan, double-click / `F` for fullscreen
 - GIF & animated WebP playback
 - Open a folder at launch (`imora <folder>`), via the `⌂` button, or drag-and-drop

@@ -145,7 +145,7 @@ impl ImoraApp {
             dragging: false,
             last_drag: Pos2::ZERO,
             fade: 0.0,
-            show_strip: true,
+            show_strip: false,
             strip_need_scroll: true,
             thumbs: HashMap::new(),
             pending_thumbs: HashSet::new(),
