@@ -10,12 +10,15 @@ decoding. No audio yet — videos play visually, in-app.
 ## Features
 
 - Arrow keys (←/→/↑/↓), PageUp/PageDown, Home/End to browse
-- Pauses and loops videos in-app; Space to play/pause, drag the progress bar to seek
+- Plays and loops videos in-app; `Space` toggles play/pause, drag the progress bar to seek
+- Fullscreen shows nothing but the media itself (move the mouse to reveal the video progress bar)
 - Filmstrip of lazy-generated thumbnails (click to jump, `G` to toggle)
 - Zoom with the scroll wheel, drag to pan, double-click / `F` for fullscreen
 - GIF & animated WebP playback
 - Open a folder at launch (`imora <folder>`), via the `⌂` button, or drag-and-drop
 - `E` opens the current file with your system player (via `xdg-open`)
+- By default the window has no decorations — imora follows systems that run
+  with window decorations disabled. Pass `--decorations` to opt back in.
 
 ## Development
 
@@ -49,9 +52,12 @@ USAGE:
     imora [OPTIONS] [FOLDER]
 
 OPTIONS:
-    -f, --fullscreen    Start in fullscreen
-    -h, --help          Print this help
-    -v, --version       Print version
+    -d, --decorations    Show window decorations (minimize/maximize/close).
+                         Default: none — imora follows systems that run with
+                         window decorations disabled.
+    -f, --fullscreen     Start in fullscreen
+    -h, --help           Print this help
+    -v, --version        Print version
 ```
 
 ## Layout

@@ -158,7 +158,24 @@ fn decode_loop(
         loop {
             match rx.try_recv() {
                 Ok(Cmd::Stop) => return Ok(()),
-                Ok(Cmd::Play(p)) => playing = p,
+                Ok(Cmd::Play(p)) => {
+                    if playing != p {
+                        playing = p;
+                        if let Ok(mut s) = st.lock() {
+                            s.playing = p;
+                        }
+                        if p {
+                            // Resuming: restart the pacing clock so we don't
+                            // fast-forward to catch up with the paused time.
+                            start_time = Instant::now();
+                        } else {
+                            // Pausing: remember where we stopped so a later
+                            // resume continues smoothly from this position.
+                            start_pts = st.lock().map(|s| s.position).unwrap_or(start_pts);
+                            start_time = Instant::now();
+                        }
+                    }
+                }
                 Ok(Cmd::Seek(t)) => pending_seek = Some(t.max(0.0)),
                 Err(_) => break,
             }
@@ -174,7 +191,15 @@ fn decode_loop(
         if !playing {
             match rx.recv_timeout(Duration::from_millis(16)) {
                 Ok(Cmd::Stop) => return Ok(()),
-                Ok(Cmd::Play(p)) => playing = p,
+                Ok(Cmd::Play(p)) => {
+                    playing = p;
+                    if let Ok(mut s) = st.lock() {
+                        s.playing = p;
+                    }
+                    if p {
+                        start_time = Instant::now();
+                    }
+                }
                 Ok(Cmd::Seek(t)) => {
                     // Render the frame at `t` even while paused.
                     let t = t.max(0.0);

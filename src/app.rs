@@ -92,6 +92,7 @@ pub struct ImoraApp {
     fullscreen: bool,
     start_fullscreen: bool,
     ui_hidden: bool,
+    pointer_inside: bool,
     last_activity: Instant,
     first_hint_until: Instant,
 }
@@ -150,6 +151,7 @@ impl ImoraApp {
             fullscreen: false,
             start_fullscreen,
             ui_hidden: false,
+            pointer_inside: false,
             last_activity: Instant::now(),
             first_hint_until: Instant::now() + Duration::from_secs(6),
         };
@@ -288,7 +290,8 @@ impl ImoraApp {
         if ctx.input(|i| i.key_pressed(Key::End)) {
             action = Some(Action::Goto(usize::MAX));
         }
-        if ctx.input(|i| i.key_pressed(Key::Space)) {
+        // Guard against a focused widget (e.g. a clicked button) swallowing Space.
+        if ctx.input(|i| i.key_pressed(Key::Space) && !i.focused) {
             if let Some(Loaded::Video(p)) = &self.loaded {
                 if p.state().playing {
                     p.pause();
@@ -651,7 +654,7 @@ impl ImoraApp {
                     uv_rect(),
                     Color32::from_white_alpha((alpha * 255.0) as u8),
                 );
-                if frames.len() > 1 {
+                if frames.len() > 1 && !self.fullscreen {
                     painter.text(
                         pos2(rr.max.x - 8.0, rr.min.y + 8.0),
                         Align2::RIGHT_TOP,
@@ -689,7 +692,9 @@ impl ImoraApp {
                             Color32::from_white_alpha((alpha * 255.0) as u8),
                         );
                     }
-                    if alpha > 0.5 {
+                    if alpha > 0.5
+                        && (!self.fullscreen || self.pointer_inside || self.scrub_active.get())
+                    {
                         self.paint_controls(ui, &painter, rect, player, &st, fr.pts);
                     }
                 } else if let Some(err) = &st.error {
@@ -706,8 +711,8 @@ impl ImoraApp {
             }
         }
 
-        // Overlay: index + name.
-        if self.fade > 0.1 {
+        // Overlay: index + name (hidden in fullscreen).
+        if self.fade > 0.1 && !self.fullscreen {
             let n = self.items.len();
             let name = truncate(&self.current_name(), 60);
             let label = format!("{} — {} / {}", name, self.index + 1, n);
@@ -721,7 +726,7 @@ impl ImoraApp {
             );
         }
 
-        if Instant::now() < self.first_hint_until && self.items.len() > 1 {
+        if Instant::now() < self.first_hint_until && self.items.len() > 1 && !self.fullscreen {
             painter.text(
                 pos2(rect.center().x, rect.max.y - 26.0),
                 Align2::CENTER_BOTTOM,
@@ -884,8 +889,11 @@ impl eframe::App for ImoraApp {
         if activity {
             self.last_activity = Instant::now();
         }
-        self.ui_hidden = self.fullscreen && self.last_activity.elapsed() > Duration::from_secs(3);
-        if self.ui_hidden {
+        // In fullscreen, show nothing but the media itself.
+        self.ui_hidden = self.fullscreen;
+        self.pointer_inside = ctx.input(|i| i.pointer.hover_pos().is_some());
+        // Also hide the cursor once idle in fullscreen.
+        if self.fullscreen && self.last_activity.elapsed() > Duration::from_secs(3) {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 

@@ -19,6 +19,9 @@ ARGS:
     <FOLDER>    Folder to open at launch
 
 OPTIONS:
+    -d, --decorations   Show window decorations (minimize/maximize/close).
+                        Default: none — imora follows systems that run with
+                        window decorations disabled.
     -f, --fullscreen    Start in fullscreen
     -h, --help          Print this help
     -v, --version       Print version
@@ -32,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut folder: Option<PathBuf> = None;
     let mut fullscreen = false;
+    let mut decorations = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -46,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             "-f" | "--fullscreen" => fullscreen = true,
+            "-d" | "--decorations" => decorations = true,
             arg if arg.starts_with('-') => {
                 eprintln!("unknown option: {arg}");
                 eprint!("{HELP}");
@@ -66,7 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         viewport: egui::ViewportBuilder::default()
             .with_title("imora")
             .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([640.0, 420.0]),
+            .with_min_inner_size([640.0, 420.0])
+            .with_decorations(decorations),
         renderer: eframe::Renderer::Glow,
         centered: true,
         ..Default::default()
