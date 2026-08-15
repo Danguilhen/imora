@@ -153,9 +153,16 @@ fn decode_loop(
         s.error = None;
     }
 
-    let mut scaler =
-        ScalingContext::get(decoder.format(), vw, vh, Pixel::RGB24, vw, vh, Flags::BILINEAR)
-            .map_err(|e| format!("cannot create scaler: {e}"))?;
+    let mut scaler = ScalingContext::get(
+        decoder.format(),
+        vw,
+        vh,
+        Pixel::RGB24,
+        vw,
+        vh,
+        Flags::BILINEAR,
+    )
+    .map_err(|e| format!("cannot create scaler: {e}"))?;
 
     let mut playing = true;
     let mut looping = looping;
@@ -350,8 +357,7 @@ fn decode_until_frame(
                     let Some(pts) = fv.pts() else {
                         continue;
                     };
-                    let secs =
-                        pts as f64 * tb.numerator() as f64 / tb.denominator() as f64;
+                    let secs = pts as f64 * tb.numerator() as f64 / tb.denominator() as f64;
                     if secs < target - 0.01 {
                         continue;
                     }
@@ -378,9 +384,16 @@ pub fn grab_frame(path: &Path, max_dim: u32) -> Result<(Vec<u8>, u32, u32), Stri
     let mut decoder = context.decoder().video().map_err(|e| e.to_string())?;
     let (w, h) = (decoder.width(), decoder.height());
     let (tw, th) = fit_dim(w, h, max_dim);
-    let mut scaler =
-        ScalingContext::get(decoder.format(), w, h, Pixel::RGB24, tw, th, Flags::BILINEAR)
-            .map_err(|e| format!("{e}"))?;
+    let mut scaler = ScalingContext::get(
+        decoder.format(),
+        w,
+        h,
+        Pixel::RGB24,
+        tw,
+        th,
+        Flags::BILINEAR,
+    )
+    .map_err(|e| format!("{e}"))?;
     let mut fv = Video::empty();
     let mut rgb = Video::empty();
     let mut guard = 0usize;

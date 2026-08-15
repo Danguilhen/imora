@@ -62,9 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let raw = args
                     .get(i)
                     .ok_or_else(|| "missing value for --interval".to_string())?;
-                slide_interval = raw.parse::<f32>().map_err(|_| {
-                    format!("invalid slideshow interval: {raw}")
-                })?;
+                slide_interval = raw
+                    .parse::<f32>()
+                    .map_err(|_| format!("invalid slideshow interval: {raw}"))?;
             }
             arg if arg.starts_with('-') => {
                 eprintln!("unknown option: {arg}");

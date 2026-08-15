@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, Align2, Color32, ColorImage, FontId, Key, Layout, Margin, Pos2, PointerButton,
-    Rect, RichText, ScrollArea, Sense, TextureHandle, TextureOptions, Vec2, pos2, vec2,
+    self, pos2, vec2, Align, Align2, Color32, ColorImage, FontId, Key, Layout, Margin,
+    PointerButton, Pos2, Rect, RichText, ScrollArea, Sense, TextureHandle, TextureOptions, Vec2,
 };
 
 use crate::media::{self, AnimatedFrame, MediaItem, MediaKind};
@@ -210,14 +210,19 @@ impl ImoraApp {
     }
 
     fn open_folder_dialog(&mut self) {
-        if let Some(dir) = rfd::FileDialog::new().set_title("Open folder").pick_folder() {
+        if let Some(dir) = rfd::FileDialog::new()
+            .set_title("Open folder")
+            .pick_folder()
+        {
             self.set_folder(dir);
         }
     }
 
     fn open_externally(&self) {
         if let Some(item) = self.items.get(self.index) {
-            let _ = std::process::Command::new("xdg-open").arg(&item.path).spawn();
+            let _ = std::process::Command::new("xdg-open")
+                .arg(&item.path)
+                .spawn();
         }
     }
 
@@ -372,18 +377,25 @@ impl ImoraApp {
     }
 
     fn handle_pointer(&mut self, ctx: &egui::Context) {
-        let (hover, primary_down, primary_pressed, primary_released, scroll, zoom_delta, double_clicked) =
-            ctx.input(|i| {
-                (
-                    i.pointer.hover_pos(),
-                    i.pointer.primary_down(),
-                    i.pointer.primary_pressed(),
-                    i.pointer.primary_released(),
-                    i.smooth_scroll_delta,
-                    i.zoom_delta(),
-                    i.pointer.button_double_clicked(PointerButton::Primary),
-                )
-            });
+        let (
+            hover,
+            primary_down,
+            primary_pressed,
+            primary_released,
+            scroll,
+            zoom_delta,
+            double_clicked,
+        ) = ctx.input(|i| {
+            (
+                i.pointer.hover_pos(),
+                i.pointer.primary_down(),
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.smooth_scroll_delta,
+                i.zoom_delta(),
+                i.pointer.button_double_clicked(PointerButton::Primary),
+            )
+        });
 
         let Some(hover) = hover else {
             return;
@@ -401,8 +413,7 @@ impl ImoraApp {
         } else {
             0.0
         };
-        let over_central =
-            hover.y > TOP_BAR_H + 4.0 && hover.y < screen.height() - strip_h - 4.0;
+        let over_central = hover.y > TOP_BAR_H + 4.0 && hover.y < screen.height() - strip_h - 4.0;
 
         if over_central {
             if (zoom_delta - 1.0).abs() > 0.001 {
@@ -513,7 +524,10 @@ impl ImoraApp {
     }
 
     fn tick_animation(&mut self, ctx: &egui::Context, dt: f32) {
-        let Some(Loaded::Image { texture, frames, .. }) = &self.loaded else {
+        let Some(Loaded::Image {
+            texture, frames, ..
+        }) = &self.loaded
+        else {
             return;
         };
         if frames.len() <= 1 {
@@ -597,7 +611,11 @@ impl ImoraApp {
             .default_size(TOP_BAR_H)
             .min_size(TOP_BAR_H)
             .max_size(TOP_BAR_H)
-            .frame(egui::Frame::default().fill(PANEL).inner_margin(Margin::symmetric(12, 6)))
+            .frame(
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .inner_margin(Margin::symmetric(12, 6)),
+            )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("imora").strong().size(16.0).color(ACCENT));
@@ -633,40 +651,39 @@ impl ImoraApp {
                             self.toggle_slideshow();
                         }
                         let gb = ui.button("⚙").on_hover_text("Slideshow settings");
-                        egui::Popup::menu(&gb).show(|ui| {
-                            ui.set_min_width(180.0);
-                            ui.label(RichText::new("Interval between items").color(TEXT));
-                            // Keep the editable text in sync with the parsed
-                            // value, unless the field is being edited.
-                            if ui.memory(|m| m.focused().is_none()) {
-                                self.interval_text = format!("{}", self.slide_interval);
-                            }
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.interval_text)
-                                        .desired_width(90.0)
-                                        .hint_text("seconds"),
-                                );
-                                ui.label(RichText::new("s").color(MUTED));
+                        egui::Popup::menu(&gb)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_min_width(180.0);
+                                ui.label(RichText::new("Interval between items").color(TEXT));
+                                // Keep the editable text in sync with the parsed
+                                // value, unless the field is being edited.
+                                if ui.memory(|m| m.focused().is_none()) {
+                                    self.interval_text = format!("{}", self.slide_interval);
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.interval_text)
+                                            .desired_width(90.0)
+                                            .hint_text("seconds"),
+                                    );
+                                    ui.label(RichText::new("s").color(MUTED));
+                                });
+                                // Commit a valid typed value to the real interval.
+                                if let Ok(v) = self.interval_text.trim().parse::<f32>() {
+                                    self.slide_interval = v.clamp(0.5, 3600.0);
+                                }
+                                ui.add_space(4.0);
+                                let start = if self.slideshow {
+                                    "Stop slideshow"
+                                } else {
+                                    "Start slideshow"
+                                };
+                                if ui.button(RichText::new(start).color(ACCENT)).clicked() {
+                                    self.toggle_slideshow();
+                                    ui.close();
+                                }
                             });
-                            // Commit a valid typed value to the real interval.
-                            if let Ok(v) = self.interval_text.trim().parse::<f32>() {
-                                self.slide_interval = v.clamp(0.5, 3600.0);
-                            }
-                            ui.add_space(4.0);
-                            let start = if self.slideshow {
-                                "Stop slideshow"
-                            } else {
-                                "Start slideshow"
-                            };
-                            if ui
-                                .button(RichText::new(start).color(ACCENT))
-                                .clicked()
-                            {
-                                self.toggle_slideshow();
-                                ui.close();
-                            }
-                        });
                     });
                 });
             });
@@ -679,7 +696,11 @@ impl ImoraApp {
             .default_size(STRIP_H)
             .min_size(STRIP_H)
             .max_size(STRIP_H)
-            .frame(egui::Frame::default().fill(PANEL).inner_margin(Margin::symmetric(8, 8)))
+            .frame(
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .inner_margin(Margin::symmetric(8, 8)),
+            )
             .show(ui, |ui| {
                 let cell = Vec2::splat(THUMB_CELL);
                 let offset = if self.strip_need_scroll {
@@ -706,7 +727,8 @@ impl ImoraApp {
                                     r.center(),
                                     fit_into(r.size(), entry.aspect),
                                 );
-                                ui.painter().image(entry.tex.id(), fit, uv_rect(), Color32::WHITE);
+                                ui.painter()
+                                    .image(entry.tex.id(), fit, uv_rect(), Color32::WHITE);
                             } else {
                                 ui.painter().circle_filled(r.center(), 4.0, MUTED);
                             }
@@ -803,7 +825,11 @@ impl ImoraApp {
                                 self.video_last_pts.set(fr.pts);
                             }
                         } else {
-                            *tex = Some(ui.ctx().load_texture("video", color, TextureOptions::LINEAR));
+                            *tex = Some(ui.ctx().load_texture(
+                                "video",
+                                color,
+                                TextureOptions::LINEAR,
+                            ));
                             self.video_last_pts.set(fr.pts);
                         }
                         let t = tex.as_ref().unwrap();
@@ -930,11 +956,16 @@ impl ImoraApp {
             pos2(rect.min.x + 24.0, rect.max.y - 30.0),
             vec2((rect.width() - 48.0).max(1.0), 4.0),
         );
-        let resp = ui.interact(bar.expand(6.0), ui.id().with("seek"), Sense::click_and_drag());
+        let resp = ui.interact(
+            bar.expand(6.0),
+            ui.id().with("seek"),
+            Sense::click_and_drag(),
+        );
 
         let frac = if self.scrub_active.get() {
             if let Some(p) = resp.interact_pointer_pos() {
-                self.scrub_frac.set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
+                self.scrub_frac
+                    .set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
             }
             self.scrub_frac.get()
         } else {
@@ -944,7 +975,8 @@ impl ImoraApp {
         if resp.drag_started() {
             self.scrub_active.set(true);
             if let Some(p) = resp.interact_pointer_pos() {
-                self.scrub_frac.set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
+                self.scrub_frac
+                    .set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
             }
         }
         if resp.drag_stopped() || resp.clicked() {
@@ -955,7 +987,11 @@ impl ImoraApp {
         painter.rect_filled(bar, 2.0, TRACK);
         let filled = Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar.height()));
         painter.rect_filled(filled, 2.0, ACCENT);
-        painter.circle_filled(pos2(bar.min.x + bar.width() * frac, bar.center().y), 5.0, ACCENT);
+        painter.circle_filled(
+            pos2(bar.min.x + bar.width() * frac, bar.center().y),
+            5.0,
+            ACCENT,
+        );
 
         let t = frac as f64 * duration;
         let label = format!("{} / {}", fmt_time(t), fmt_time(duration));
@@ -1052,7 +1088,11 @@ impl eframe::App for ImoraApp {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(BG).inner_margin(Margin::same(0)))
+            .frame(
+                egui::Frame::default()
+                    .fill(BG)
+                    .inner_margin(Margin::same(0)),
+            )
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 self.paint_media(ui, rect);

@@ -6,13 +6,12 @@ use std::time::Duration;
 use image::AnimationDecoder;
 
 pub const IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "ico", "qoi", "pnm", "dds",
-    "tga", "exr",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "ico", "qoi", "pnm", "dds", "tga",
+    "exr",
 ];
 
 pub const VIDEO_EXTS: &[&str] = &[
-    "mp4", "mkv", "webm", "mov", "m4v", "avi", "mpeg", "mpg", "ogv", "wmv", "flv", "3gp",
-    "ts",
+    "mp4", "mkv", "webm", "mov", "m4v", "avi", "mpeg", "mpg", "ogv", "wmv", "flv", "3gp", "ts",
 ];
 
 /// Longest edge an image is allowed to have after decoding; bigger media is
@@ -36,8 +35,7 @@ pub struct MediaItem {
 }
 
 pub fn ext_of(path: &Path) -> Option<String> {
-    path.extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
+    path.extension().map(|e| e.to_string_lossy().to_lowercase())
 }
 
 pub fn classify(path: &Path) -> Option<MediaKind> {
