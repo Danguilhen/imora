@@ -24,7 +24,7 @@ OPTIONS:
                         window decorations disabled.
     -f, --fullscreen    Start in fullscreen
     -i, --interval <SECONDS>
-                        Slideshow interval between items (default: 5.0)
+                        Slideshow interval between items (default: 2.0)
     -s, --slideshow     Start the slideshow automatically
     -h, --help          Print this help
     -v, --version       Print version
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut fullscreen = false;
     let mut decorations = false;
     let mut start_slideshow = false;
-    let mut slide_interval: f32 = 5.0;
+    let mut slide_interval: f32 = 2.0;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;

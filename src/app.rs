@@ -27,6 +27,8 @@ const TRACK: Color32 = Color32::from_rgb(0x2a, 0x30, 0x3a);
 const TOP_BAR_H: f32 = 42.0;
 const STRIP_H: f32 = 96.0;
 const THUMB_CELL: f32 = 84.0;
+/// Seconds of pointer inactivity after which the video progress bar hides.
+const SEEK_FADE: f32 = 1.5;
 
 enum LoadData {
     Image(media::LoadedImage),
@@ -92,7 +94,7 @@ pub struct ImoraApp {
     fullscreen: bool,
     start_fullscreen: bool,
     ui_hidden: bool,
-    pointer_inside: bool,
+    seek_visible: bool,
     last_activity: Instant,
     first_hint_until: Instant,
 
@@ -157,7 +159,7 @@ impl ImoraApp {
             fullscreen: false,
             start_fullscreen,
             ui_hidden: false,
-            pointer_inside: false,
+            seek_visible: false,
             last_activity: Instant::now(),
             first_hint_until: Instant::now() + Duration::from_secs(6),
             slideshow: start_slideshow,
@@ -627,9 +629,10 @@ impl ImoraApp {
                             ui.set_min_width(180.0);
                             ui.label(RichText::new("Interval between items").color(TEXT));
                             ui.add(
-                                egui::Slider::new(&mut self.slide_interval, 0.5..=60.0)
-                                    .suffix(" s")
-                                    .step_by(0.5),
+                                egui::DragValue::new(&mut self.slide_interval)
+                                    .range(0.5..=60.0)
+                                    .speed(0.25)
+                                    .suffix(" s"),
                             );
                             ui.add_space(4.0);
                             let start = if self.slideshow {
@@ -792,9 +795,7 @@ impl ImoraApp {
                             Color32::from_white_alpha((alpha * 255.0) as u8),
                         );
                     }
-                    if alpha > 0.5
-                        && (!self.fullscreen || self.pointer_inside || self.scrub_active.get())
-                    {
+                    if alpha > 0.5 && self.seek_visible {
                         self.paint_controls(ui, &painter, rect, player, &st, fr.pts);
                     }
                 } else if let Some(err) = &st.error {
@@ -991,10 +992,19 @@ impl eframe::App for ImoraApp {
         }
         // In fullscreen, show nothing but the media itself.
         self.ui_hidden = self.fullscreen;
-        self.pointer_inside = ctx.input(|i| i.pointer.hover_pos().is_some());
         // Also hide the cursor once idle in fullscreen.
         if self.fullscreen && self.last_activity.elapsed() > Duration::from_secs(3) {
             ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
+
+        // The video progress bar is only shown while the mouse has been active.
+        let idle = ctx.input(|i| i.pointer.time_since_last_movement());
+        self.seek_visible = self.scrub_active.get() || idle < SEEK_FADE;
+        if self.seek_visible && !self.scrub_active.get() {
+            // Make sure we repaint right when the bar should fade away, even if
+            // the video is paused and nothing else is driving repaints.
+            let until_hide = (SEEK_FADE - idle).clamp(0.05, 1.0);
+            ctx.request_repaint_after(Duration::from_secs_f32(until_hide));
         }
 
         self.handle_drops(ctx);
