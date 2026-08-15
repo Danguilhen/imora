@@ -11,8 +11,10 @@ decoding. No audio yet — videos play visually, in-app.
 
 - Arrow keys (←/→/↑/↓), PageUp/PageDown, Home/End to browse
 - Plays and loops videos in-app; `Space` toggles play/pause, drag the progress bar to seek
-- Slideshow mode (`S` or the `▶` button) auto-advances every few seconds; the
-  interval is adjustable with the `⚙` popup or the `--interval` flag
+- Slideshow mode (`S` or the `▶` button) auto-advances through images every
+  few seconds (the interval is adjustable with the `⚙` popup or the
+  `--interval` flag). Videos play to the end — the slideshow moves on only
+  once a video finishes.
 - Fullscreen shows nothing but the media itself (move the mouse to reveal the video progress bar)
 - Filmstrip of lazy-generated thumbnails (click to jump, `G` to toggle)
 - Zoom with the scroll wheel, drag to pan, double-click / `F` for fullscreen

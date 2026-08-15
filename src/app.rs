@@ -245,6 +245,10 @@ impl ImoraApp {
     fn toggle_slideshow(&mut self) {
         self.slideshow = !self.slideshow;
         self.slideshow_last = Instant::now();
+        // Videos loop outside of slideshow, but play to the end inside it.
+        if let Some(Loaded::Video(p)) = &self.loaded {
+            p.set_loop(!self.slideshow);
+        }
     }
 
     fn spawn_load(&mut self) {
@@ -255,13 +259,17 @@ impl ImoraApp {
         let item = self.items[self.index].clone();
         let gen = self.load_gen;
         let tx = self.load_tx.clone();
+        let slideshow = self.slideshow;
         std::thread::spawn(move || {
             let data = match item.kind {
                 MediaKind::Image => match media::load_image(&item.path) {
                     Ok(img) => LoadData::Image(img),
                     Err(e) => LoadData::Failed(format!("{} — {e}", item.name)),
                 },
-                MediaKind::Video => LoadData::Video(VideoPlayer::open(item.path)),
+                MediaKind::Video => {
+                    // In slideshow mode videos play once and stop; otherwise loop.
+                    LoadData::Video(VideoPlayer::open(item.path, !slideshow))
+                }
             };
             let _ = tx.send(LoadOutcome { gen, data });
         });
@@ -538,15 +546,37 @@ impl ImoraApp {
         if !self.slideshow || self.items.len() <= 1 {
             return;
         }
-        let interval = Duration::from_secs_f32(self.slide_interval.max(0.5));
-        let elapsed = self.slideshow_last.elapsed();
-        if elapsed >= interval {
-            self.slideshow_last = Instant::now();
-            self.apply_action(Action::Next);
-        } else {
-            // Wake up in time for the next transition, even if nothing else
-            // is repainting (e.g. a paused video or a still image).
-            ctx.request_repaint_after(interval - elapsed);
+        match self.items[self.index].kind {
+            // Images advance on the configured interval.
+            MediaKind::Image => {
+                let interval = Duration::from_secs_f32(self.slide_interval.max(0.5));
+                let elapsed = self.slideshow_last.elapsed();
+                if elapsed >= interval {
+                    self.slideshow_last = Instant::now();
+                    self.apply_action(Action::Next);
+                } else {
+                    // Wake up in time for the next transition, even if nothing
+                    // else is repainting (e.g. a paused video or still image).
+                    ctx.request_repaint_after(interval - elapsed);
+                }
+            }
+            // Videos play to the end regardless of the interval; advance only
+            // once the video is over (or it failed to open).
+            MediaKind::Video => match &self.loaded {
+                Some(Loaded::Video(p)) => {
+                    let st = p.state();
+                    if st.ended || st.error.is_some() {
+                        self.slideshow_last = Instant::now();
+                        self.apply_action(Action::Next);
+                    }
+                    // While playing, the app repaints anyway; while paused the
+                    // user has taken manual control, so we simply wait.
+                }
+                _ => {
+                    // Still loading the video — poll until it is ready.
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+            },
         }
     }
 

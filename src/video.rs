@@ -37,11 +37,14 @@ pub struct PlayerState {
     pub width: u32,
     pub height: u32,
     pub error: Option<String>,
+    /// True once a non-looping video has reached the end of the file.
+    pub ended: bool,
 }
 
 enum Cmd {
     Play(bool),
     Seek(f64),
+    SetLoop(bool),
     Stop,
 }
 
@@ -53,7 +56,9 @@ pub struct VideoPlayer {
 }
 
 impl VideoPlayer {
-    pub fn open(path: PathBuf) -> Self {
+    /// `looping`: when `true` the video restarts at the end instead of
+    /// stopping and setting [`PlayerState::ended`].
+    pub fn open(path: PathBuf, looping: bool) -> Self {
         let (tx, rx) = mpsc::channel();
         let frame = Arc::new(Mutex::new(Frame::default()));
         let state = Arc::new(Mutex::new(PlayerState {
@@ -64,13 +69,14 @@ impl VideoPlayer {
             width: 0,
             height: 0,
             error: None,
+            ended: false,
         }));
         let f2 = Arc::clone(&frame);
         let s2 = Arc::clone(&state);
         let handle = std::thread::Builder::new()
             .name("imora-video".into())
             .spawn(move || {
-                if let Err(e) = decode_loop(&path, &rx, &f2, &s2) {
+                if let Err(e) = decode_loop(&path, looping, &rx, &f2, &s2) {
                     if let Ok(mut s) = s2.lock() {
                         s.loaded = true;
                         s.error = Some(e);
@@ -99,6 +105,10 @@ impl VideoPlayer {
         let _ = self.tx.send(Cmd::Seek(t));
     }
 
+    pub fn set_loop(&self, looping: bool) {
+        let _ = self.tx.send(Cmd::SetLoop(looping));
+    }
+
     pub fn frame(&self) -> Frame {
         self.frame.lock().map(|g| g.clone()).unwrap_or_default()
     }
@@ -119,6 +129,7 @@ impl Drop for VideoPlayer {
 
 fn decode_loop(
     path: &Path,
+    looping: bool,
     rx: &Receiver<Cmd>,
     out: &Arc<Mutex<Frame>>,
     st: &Arc<Mutex<PlayerState>>,
@@ -147,6 +158,7 @@ fn decode_loop(
             .map_err(|e| format!("cannot create scaler: {e}"))?;
 
     let mut playing = true;
+    let mut looping = looping;
     let mut pending_seek: Option<f64> = None;
     let mut start_pts = 0.0_f64;
     let mut start_time = Instant::now();
@@ -158,6 +170,7 @@ fn decode_loop(
         loop {
             match rx.try_recv() {
                 Ok(Cmd::Stop) => return Ok(()),
+                Ok(Cmd::SetLoop(b)) => looping = b,
                 Ok(Cmd::Play(p)) => {
                     if playing != p {
                         playing = p;
@@ -165,8 +178,18 @@ fn decode_loop(
                             s.playing = p;
                         }
                         if p {
-                            // Resuming: restart the pacing clock so we don't
-                            // fast-forward to catch up with the paused time.
+                            // Resuming: if we had already reached the end,
+                            // replay from the start.
+                            if st.lock().map(|s| s.ended).unwrap_or(false) {
+                                let _ = input.seek(0, ..);
+                                decoder.flush();
+                                start_pts = 0.0;
+                                if let Ok(mut s) = st.lock() {
+                                    s.ended = false;
+                                }
+                            }
+                            // Restart the pacing clock so we don't fast-forward
+                            // to catch up with the paused time.
                             start_time = Instant::now();
                         } else {
                             // Pausing: remember where we stopped so a later
@@ -186,17 +209,29 @@ fn decode_loop(
             decoder.flush();
             start_pts = t;
             start_time = Instant::now();
+            if let Ok(mut s) = st.lock() {
+                s.ended = false;
+            }
         }
 
         if !playing {
             match rx.recv_timeout(Duration::from_millis(16)) {
                 Ok(Cmd::Stop) => return Ok(()),
+                Ok(Cmd::SetLoop(b)) => looping = b,
                 Ok(Cmd::Play(p)) => {
                     playing = p;
                     if let Ok(mut s) = st.lock() {
                         s.playing = p;
                     }
                     if p {
+                        if st.lock().map(|s| s.ended).unwrap_or(false) {
+                            let _ = input.seek(0, ..);
+                            decoder.flush();
+                            start_pts = 0.0;
+                            if let Ok(mut s) = st.lock() {
+                                s.ended = false;
+                            }
+                        }
                         start_time = Instant::now();
                     }
                 }
@@ -207,6 +242,9 @@ fn decode_loop(
                     decoder.flush();
                     start_pts = t;
                     start_time = Instant::now();
+                    if let Ok(mut s) = st.lock() {
+                        s.ended = false;
+                    }
                     if let Some(pts) = decode_until_frame(
                         &mut input,
                         stream_idx,
@@ -263,11 +301,21 @@ fn decode_loop(
             }
             Some(_) => {}
             None => {
-                // End of file — loop back to the start.
-                let _ = input.seek(0, ..);
-                decoder.flush();
-                start_pts = 0.0;
-                start_time = Instant::now();
+                // End of file.
+                if looping {
+                    // Loop back to the start.
+                    let _ = input.seek(0, ..);
+                    decoder.flush();
+                    start_pts = 0.0;
+                    start_time = Instant::now();
+                } else {
+                    // Stop and report the end so e.g. the slideshow can move on.
+                    if let Ok(mut s) = st.lock() {
+                        s.ended = true;
+                        s.playing = false;
+                    }
+                    playing = false;
+                }
             }
         }
     }
