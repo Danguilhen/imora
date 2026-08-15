@@ -100,6 +100,7 @@ pub struct ImoraApp {
 
     slideshow: bool,
     slide_interval: f32,
+    interval_text: String,
     slideshow_last: Instant,
 }
 
@@ -164,6 +165,7 @@ impl ImoraApp {
             first_hint_until: Instant::now() + Duration::from_secs(6),
             slideshow: start_slideshow,
             slide_interval: slide_interval.clamp(0.5, 3600.0),
+            interval_text: "2".to_string(),
             slideshow_last: Instant::now(),
         };
 
@@ -296,6 +298,12 @@ impl ImoraApp {
     // ---- input -----------------------------------------------------------
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // Let a focused text widget have the keys (typing, cursor movement,
+        // Enter/space). egui only focuses text widgets here, so this never
+        // blocks arrow-key navigation after clicking a button.
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
         let mut action: Option<Action> = None;
 
         if ctx.input(|i| i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown)) {
@@ -628,12 +636,23 @@ impl ImoraApp {
                         egui::Popup::menu(&gb).show(|ui| {
                             ui.set_min_width(180.0);
                             ui.label(RichText::new("Interval between items").color(TEXT));
-                            ui.add(
-                                egui::DragValue::new(&mut self.slide_interval)
-                                    .range(0.5..=60.0)
-                                    .speed(0.25)
-                                    .suffix(" s"),
-                            );
+                            // Keep the editable text in sync with the parsed
+                            // value, unless the field is being edited.
+                            if ui.memory(|m| m.focused().is_none()) {
+                                self.interval_text = format!("{}", self.slide_interval);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.interval_text)
+                                        .desired_width(90.0)
+                                        .hint_text("seconds"),
+                                );
+                                ui.label(RichText::new("s").color(MUTED));
+                            });
+                            // Commit a valid typed value to the real interval.
+                            if let Ok(v) = self.interval_text.trim().parse::<f32>() {
+                                self.slide_interval = v.clamp(0.5, 3600.0);
+                            }
                             ui.add_space(4.0);
                             let start = if self.slideshow {
                                 "Stop slideshow"
