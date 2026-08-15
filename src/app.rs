@@ -451,8 +451,14 @@ impl ImoraApp {
     }
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
-        self.fullscreen = !self.fullscreen;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        // Base the toggle on the actual window state so external fullscreen
+        // (e.g. a compositor keybind) is respected too.
+        let now = ctx
+            .input(|i| i.viewport().fullscreen)
+            .unwrap_or(self.fullscreen);
+        let target = !now;
+        self.fullscreen = target;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(target));
         self.last_activity = Instant::now();
     }
 
@@ -563,7 +569,7 @@ impl ImoraApp {
                 return true;
             }
         }
-        self.loaded.is_none()
+        self.loaded.is_none() || self.fade < 1.0
     }
 
     fn tick_slideshow(&mut self, ctx: &egui::Context) {
@@ -1037,8 +1043,13 @@ impl eframe::App for ImoraApp {
 
         if self.start_fullscreen {
             self.start_fullscreen = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             self.fullscreen = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
+        // Sync with the real window state so fullscreen triggered externally
+        // (e.g. via a compositor keybind) also hides the chrome.
+        if let Some(fullscreen) = ctx.input(|i| i.viewport().fullscreen) {
+            self.fullscreen = fullscreen;
         }
 
         let activity = ctx.input(|i| !i.events.is_empty());
