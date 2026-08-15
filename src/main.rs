@@ -1,6 +1,7 @@
 //! imora — a lightweight, elegant media gallery.
 
 mod app;
+mod browser;
 mod media;
 mod thumbs;
 mod video;

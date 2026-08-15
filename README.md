@@ -21,7 +21,8 @@ decoding. No audio yet — videos play visually, in-app.
   `▤` button) to toggle it (click a thumbnail to jump)
 - Zoom with the scroll wheel, drag to pan, double-click / `F` for fullscreen
 - GIF & animated WebP playback
-- Open a folder at launch (`imora <folder>`), via the `⌂` button, or drag-and-drop
+- Open a folder at launch (`imora <folder>`), via the built-in folder browser
+  (`⌂` button / `O` key), or by drag-and-drop
 - `E` opens the current file with your system player (via `xdg-open`)
 - By default the window has no decorations — imora follows systems that run
   with window decorations disabled. Pass `--decorations` to opt back in.
@@ -83,7 +84,7 @@ OPTIONS:
 | drag           | Pan when zoomed                       |
 | `F` / dbl-click| Toggle fullscreen                    |
 | `G`            | Toggle filmstrip                      |
-| `O`            | Open a folder                         |
+| `O`            | Open a folder (built-in browser)     |
 | `E`            | Open current file with system player  |
 
 ## Structure

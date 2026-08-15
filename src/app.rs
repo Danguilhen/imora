@@ -12,6 +12,7 @@ use eframe::egui::{
     PointerButton, Pos2, Rect, RichText, ScrollArea, Sense, TextureHandle, TextureOptions, Vec2,
 };
 
+use crate::browser::{BrowserAction, FolderBrowser};
 use crate::media::{self, AnimatedFrame, MediaItem, MediaKind};
 use crate::thumbs::{self, ThumbJob, ThumbResult};
 use crate::video::{PlayerState, VideoPlayer};
@@ -102,6 +103,8 @@ pub struct ImoraApp {
     slide_interval: f32,
     interval_text: String,
     slideshow_last: Instant,
+
+    browser: Option<FolderBrowser>,
 }
 
 struct ThumbEntry {
@@ -167,6 +170,7 @@ impl ImoraApp {
             slide_interval: slide_interval.clamp(0.5, 3600.0),
             interval_text: "2".to_string(),
             slideshow_last: Instant::now(),
+            browser: None,
         };
 
         if let Some(dir) = folder {
@@ -210,12 +214,8 @@ impl ImoraApp {
     }
 
     fn open_folder_dialog(&mut self) {
-        if let Some(dir) = rfd::FileDialog::new()
-            .set_title("Open folder")
-            .pick_folder()
-        {
-            self.set_folder(dir);
-        }
+        let start = self.folder.clone().unwrap_or_default();
+        self.browser = Some(FolderBrowser::new(start));
     }
 
     fn open_externally(&self) {
@@ -1047,8 +1047,11 @@ impl eframe::App for ImoraApp {
         }
         // In fullscreen, show nothing but the media itself.
         self.ui_hidden = self.fullscreen;
-        // Also hide the cursor once idle in fullscreen.
-        if self.fullscreen && self.last_activity.elapsed() > Duration::from_secs(3) {
+        // Also hide the cursor once idle in fullscreen (unless browsing folders).
+        if self.fullscreen
+            && self.browser.is_none()
+            && self.last_activity.elapsed() > Duration::from_secs(3)
+        {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
@@ -1063,8 +1066,12 @@ impl eframe::App for ImoraApp {
         }
 
         self.handle_drops(ctx);
-        self.handle_keys(ctx);
-        self.handle_pointer(ctx);
+        // While the folder browser is open, it owns the keys and the pointer
+        // (arrows/Enter navigate its list, typing goes to its path field).
+        if self.browser.is_none() {
+            self.handle_keys(ctx);
+            self.handle_pointer(ctx);
+        }
 
         self.poll_load(ctx);
         self.poll_thumbs(ctx);
@@ -1072,7 +1079,9 @@ impl eframe::App for ImoraApp {
 
         self.fade = (self.fade + dt / 0.16).min(1.0);
 
-        self.tick_slideshow(ctx);
+        if self.browser.is_none() {
+            self.tick_slideshow(ctx);
+        }
 
         if self.needs_repaint() {
             ctx.request_repaint_after(Duration::from_millis(16));
@@ -1097,6 +1106,24 @@ impl eframe::App for ImoraApp {
                 let rect = ui.max_rect();
                 self.paint_media(ui, rect);
             });
+
+        // Built-in folder browser (used instead of the XDG portal, which may
+        // have no file-chooser backend installed for this session).
+        let action = self
+            .browser
+            .as_mut()
+            .map(|browser| browser.show(ui.ctx()))
+            .unwrap_or(BrowserAction::None);
+        match action {
+            BrowserAction::Open(path) => {
+                self.browser = None;
+                self.set_folder(path);
+            }
+            BrowserAction::Cancel => {
+                self.browser = None;
+            }
+            BrowserAction::None => {}
+        }
     }
 }
 
