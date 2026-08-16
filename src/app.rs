@@ -105,6 +105,16 @@ pub struct ImoraApp {
     interval_text: String,
     slideshow_last: Instant,
 
+    loop_media: bool,
+    include_video: bool,
+    shuffle: bool,
+    crossfade: bool,
+    crossfade_secs: f32,
+    crossfade_text: String,
+    order: Vec<usize>,
+    prev: Option<PrevFrame>,
+    crossfade_t: f32,
+
     browser: Option<FolderBrowser>,
 
     show_info: bool,
@@ -118,6 +128,12 @@ pub struct ImoraApp {
 struct InfoOutcome {
     path: PathBuf,
     info: MediaInfo,
+}
+
+/// Snapshot of the previous media, kept around for crossfade transitions.
+struct PrevFrame {
+    tex: TextureHandle,
+    aspect: f32,
 }
 
 struct ThumbEntry {
@@ -184,6 +200,15 @@ impl ImoraApp {
             slide_interval: slide_interval.clamp(0.5, 3600.0),
             interval_text: "2".to_string(),
             slideshow_last: Instant::now(),
+            loop_media: true,
+            include_video: true,
+            shuffle: false,
+            crossfade: true,
+            crossfade_secs: 0.3,
+            crossfade_text: "0.3".to_string(),
+            order: Vec::new(),
+            prev: None,
+            crossfade_t: 0.0,
             browser: None,
             show_info: false,
             info_loading: false,
@@ -211,6 +236,9 @@ impl ImoraApp {
         self.index = 0;
         self.thumbs.clear();
         self.pending_thumbs.clear();
+        self.prev = None;
+        self.build_order();
+        self.ensure_index_in_order();
         self.reset_view();
         self.spawn_load();
     }
@@ -231,6 +259,9 @@ impl ImoraApp {
             self.index = index;
             self.thumbs.clear();
             self.pending_thumbs.clear();
+            self.prev = None;
+            self.build_order();
+            self.ensure_index_in_order();
             self.reset_view();
             self.spawn_load();
         }
@@ -267,6 +298,8 @@ impl ImoraApp {
         if index == self.index && self.loaded.is_some() {
             return;
         }
+        // Keep the current frame around for the crossfade transition.
+        self.capture_prev();
         self.index = index;
         self.reset_view();
         self.spawn_load();
@@ -274,12 +307,54 @@ impl ImoraApp {
         self.slideshow_last = Instant::now();
     }
 
+    /// Snapshot the currently displayed media so it can fade out underneath
+    /// the next one when crossfade is enabled.
+    fn capture_prev(&mut self) {
+        if !self.crossfade {
+            self.prev = None;
+            return;
+        }
+        let prev = match &self.loaded {
+            Some(Loaded::Image {
+                texture,
+                width,
+                height,
+                ..
+            }) => {
+                let aspect = *width as f32 / *height as f32;
+                Some(PrevFrame {
+                    tex: texture.clone(),
+                    aspect,
+                })
+            }
+            Some(Loaded::Video(player)) => {
+                let frame = player.frame();
+                if frame.width > 0 {
+                    self.video_tex.borrow().as_ref().map(|tex| PrevFrame {
+                        tex: tex.clone(),
+                        aspect: frame.width as f32 / frame.height as f32,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        self.prev = prev;
+        self.crossfade_t = 0.0;
+    }
+
     fn toggle_slideshow(&mut self) {
         self.slideshow = !self.slideshow;
         self.slideshow_last = Instant::now();
-        // Videos loop outside of slideshow, but play to the end inside it.
+        // Videos loop outside of slideshow, but play to the end inside it
+        // (respecting the loop setting).
+        self.set_video_loop();
+    }
+
+    fn set_video_loop(&self) {
         if let Some(Loaded::Video(p)) = &self.loaded {
-            p.set_loop(!self.slideshow);
+            p.set_loop(self.loop_media && !self.slideshow);
         }
     }
 
@@ -292,6 +367,7 @@ impl ImoraApp {
         let gen = self.load_gen;
         let tx = self.load_tx.clone();
         let slideshow = self.slideshow;
+        let loop_media = self.loop_media;
         std::thread::spawn(move || {
             let data = match item.kind {
                 MediaKind::Image => match media::load_image(&item.path) {
@@ -299,28 +375,68 @@ impl ImoraApp {
                     Err(e) => LoadData::Failed(format!("{} — {e}", item.name)),
                 },
                 MediaKind::Video => {
-                    // In slideshow mode videos play once and stop; otherwise loop.
-                    LoadData::Video(VideoPlayer::open(item.path, !slideshow))
+                    // In slideshow mode (or with loop off) videos play once and
+                    // stop; otherwise they loop.
+                    LoadData::Video(VideoPlayer::open(item.path, loop_media && !slideshow))
                 }
             };
             let _ = tx.send(LoadOutcome { gen, data });
         });
     }
 
-    fn apply_action(&mut self, a: Action) {
+    /// The position of the current item within `order` (the visible sequence).
+    fn pos_in_order(&self) -> Option<usize> {
+        self.order.iter().position(|&i| i == self.index)
+    }
+
+    /// If the current item is not part of the visible order (e.g. videos were
+    /// excluded while one was shown), jump to the first visible item.
+    fn ensure_index_in_order(&mut self) {
+        if self.pos_in_order().is_none() {
+            if let Some(&first) = self.order.first() {
+                self.index = first;
+            }
+        }
+    }
+
+    /// Build the navigation order: sorted (or filtered to images) and,
+    /// when shuffle is on, in a random permutation.
+    fn build_order(&mut self) {
         let n = self.items.len();
+        let mut order: Vec<usize> = if self.include_video {
+            (0..n).collect()
+        } else {
+            (0..n).filter(|&i| self.items[i].kind == MediaKind::Image).collect()
+        };
+        if self.shuffle {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x9e37_79b9_7f4a_7c15);
+            shuffled_indices(&mut order, seed);
+        }
+        self.order = order;
+    }
+
+    fn apply_action(&mut self, a: Action) {
+        let n = self.order.len();
         if n == 0 {
             return;
         }
-        let cur = self.index as isize;
+        let pos = self.pos_in_order().unwrap_or(0) as isize;
         let target = match a {
-            Action::Next => cur + 1,
-            Action::Prev => cur - 1,
-            Action::Skip(d) => cur + d,
+            Action::Next => pos + 1,
+            Action::Prev => pos - 1,
+            Action::Skip(d) => pos + d,
             Action::Goto(usize::MAX) => (n - 1) as isize,
             Action::Goto(i) => i as isize,
         };
-        self.goto(target.rem_euclid(n as isize) as usize);
+        let target = if self.loop_media {
+            target.rem_euclid(n as isize) as usize
+        } else {
+            target.clamp(0, (n - 1) as isize) as usize
+        };
+        self.goto(self.order[target]);
     }
 
     // ---- input -----------------------------------------------------------
@@ -535,14 +651,15 @@ impl ImoraApp {
     }
 
     fn request_thumbs(&mut self) {
-        let n = self.items.len();
+        let n = self.order.len();
         if n == 0 {
             return;
         }
-        let lo = self.index.saturating_sub(12);
-        let hi = (self.index + 13).min(n);
-        for i in lo..hi {
-            let item = &self.items[i];
+        let pos = self.pos_in_order().unwrap_or(0);
+        let lo = pos.saturating_sub(12);
+        let hi = (pos + 13).min(n);
+        for k in lo..hi {
+            let item = &self.items[self.order[k]];
             if self.thumbs.contains_key(&item.path) || self.pending_thumbs.contains(&item.path) {
                 continue;
             }
@@ -599,7 +716,7 @@ impl ImoraApp {
                 return true;
             }
         }
-        self.loaded.is_none() || self.fade < 1.0
+        self.loaded.is_none() || self.fade < 1.0 || self.prev.is_some()
     }
 
     /// Keeps the info panel in sync with the current media: re-gathers
@@ -650,22 +767,30 @@ impl ImoraApp {
                 }
             }
             // Videos play to the end regardless of the interval; advance only
-            // once the video is over (or it failed to open).
-            MediaKind::Video => match &self.loaded {
-                Some(Loaded::Video(p)) => {
-                    let st = p.state();
-                    if st.ended || st.error.is_some() {
-                        self.slideshow_last = Instant::now();
-                        self.apply_action(Action::Next);
+            // once the video is over (or it failed to open). When videos are
+            // excluded from the slideshow, skip them entirely.
+            MediaKind::Video => {
+                if !self.include_video {
+                    self.slideshow_last = Instant::now();
+                    self.apply_action(Action::Next);
+                    return;
+                }
+                match &self.loaded {
+                    Some(Loaded::Video(p)) => {
+                        let st = p.state();
+                        if st.ended || st.error.is_some() {
+                            self.slideshow_last = Instant::now();
+                            self.apply_action(Action::Next);
+                        }
+                        // While playing, the app repaints anyway; while paused the
+                        // user has taken manual control, so we simply wait.
                     }
-                    // While playing, the app repaints anyway; while paused the
-                    // user has taken manual control, so we simply wait.
+                    _ => {
+                        // Still loading the video — poll until it is ready.
+                        ctx.request_repaint_after(Duration::from_millis(100));
+                    }
                 }
-                _ => {
-                    // Still loading the video — poll until it is ready.
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
-            },
+            }
         }
     }
 
@@ -720,11 +845,12 @@ impl ImoraApp {
                         if sb.clicked() {
                             self.toggle_slideshow();
                         }
-                        let gb = ui.button("⚙").on_hover_text("Slideshow settings");
+                        let gb = ui.button("⚙").on_hover_text("Settings");
                         egui::Popup::menu(&gb)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                             .show(|ui| {
-                                ui.set_min_width(180.0);
+                                ui.set_min_width(230.0);
+                                ui.label(RichText::new("Slideshow").strong().size(13.0));
                                 ui.label(RichText::new("Interval between items").color(TEXT));
                                 // Keep the editable text in sync with the parsed
                                 // value, unless the field is being edited.
@@ -743,7 +869,52 @@ impl ImoraApp {
                                 if let Ok(v) = self.interval_text.trim().parse::<f32>() {
                                     self.slide_interval = v.clamp(0.5, 3600.0);
                                 }
-                                ui.add_space(4.0);
+
+                                ui.add_space(6.0);
+                                ui.separator();
+                                ui.label(RichText::new("Playback").strong().size(13.0));
+
+                                if ui.checkbox(&mut self.loop_media, "Loop videos").changed() {
+                                    self.set_video_loop();
+                                }
+                                ui.checkbox(
+                                    &mut self.include_video,
+                                    "Include videos in the rotation",
+                                )
+                                .changed()
+                                .then(|| {
+                                    self.build_order();
+                                    self.ensure_index_in_order();
+                                });
+                                if ui.checkbox(&mut self.shuffle, "Shuffle order").changed() {
+                                    self.build_order();
+                                }
+                                if ui
+                                    .checkbox(&mut self.crossfade, "Crossfade transitions")
+                                    .changed()
+                                    && !self.crossfade
+                                {
+                                    self.prev = None;
+                                }
+                                if self.crossfade {
+                                    if ui.memory(|m| m.focused().is_none()) {
+                                        self.crossfade_text =
+                                            format!("{}", self.crossfade_secs);
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.label("Crossfade");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.crossfade_text)
+                                                .desired_width(50.0),
+                                        );
+                                        ui.label(RichText::new("s").color(MUTED));
+                                    });
+                                    if let Ok(v) = self.crossfade_text.trim().parse::<f32>() {
+                                        self.crossfade_secs = v.clamp(0.05, 5.0);
+                                    }
+                                }
+
+                                ui.add_space(6.0);
                                 let start = if self.slideshow {
                                     "Stop slideshow"
                                 } else {
@@ -775,7 +946,8 @@ impl ImoraApp {
                 let cell = Vec2::splat(THUMB_CELL);
                 let offset = if self.strip_need_scroll {
                     let avail_w = ui.available_width().max(1.0);
-                    (self.index as f32 * (THUMB_CELL + 8.0) - avail_w * 0.5).max(0.0)
+                    let pos = self.pos_in_order().unwrap_or(0) as f32;
+                    (pos * (THUMB_CELL + 8.0) - avail_w * 0.5).max(0.0)
                 } else {
                     0.0
                 };
@@ -789,7 +961,8 @@ impl ImoraApp {
                 let mut click: Option<usize> = None;
                 scroll.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (i, item) in self.items.iter().enumerate() {
+                        for &item_idx in self.order.iter() {
+                            let item = &self.items[item_idx];
                             let (r, resp) = ui.allocate_exact_size(cell, Sense::click());
                             ui.painter().rect_filled(r, 6.0, CELL);
                             if let Some(entry) = self.thumbs.get(&item.path) {
@@ -802,7 +975,8 @@ impl ImoraApp {
                             } else {
                                 ui.painter().circle_filled(r.center(), 4.0, MUTED);
                             }
-                            if i == self.index {
+                            let is_current = item_idx == self.index;
+                            if is_current {
                                 ui.painter().rect_stroke(
                                     r,
                                     6.0,
@@ -818,7 +992,7 @@ impl ImoraApp {
                                 );
                             }
                             if resp.clicked() {
-                                click = Some(i);
+                                click = Some(item_idx);
                             }
                         }
                     });
@@ -836,6 +1010,21 @@ impl ImoraApp {
         if self.items.is_empty() {
             self.paint_welcome(ui, rect);
             return;
+        }
+
+        // Draw the previous media underneath while it crossfades away.
+        if let Some(prev) = &self.prev {
+            let t = (self.crossfade_t / self.crossfade_secs.max(0.05)).clamp(0.0, 1.0);
+            let alpha = 1.0 - ease_out(t);
+            if alpha > 0.01 {
+                let r = self.media_rect(rect, prev.aspect);
+                painter.image(
+                    prev.tex.id(),
+                    r,
+                    uv_rect(),
+                    Color32::from_white_alpha((alpha * 255.0) as u8),
+                );
+            }
         }
 
         match &self.loaded {
@@ -1187,6 +1376,14 @@ impl eframe::App for ImoraApp {
 
         self.fade = (self.fade + dt / 0.16).min(1.0);
 
+        // Advance any active crossfade transition.
+        if self.prev.is_some() {
+            self.crossfade_t += dt;
+            if self.crossfade_t >= self.crossfade_secs.max(0.05) {
+                self.prev = None;
+            }
+        }
+
         if self.browser.is_none() {
             self.tick_slideshow(ctx);
         }
@@ -1298,5 +1495,43 @@ fn fmt_time(secs: f64) -> String {
         format!("{h}:{m:02}:{sec:02}")
     } else {
         format!("{m}:{sec:02}")
+    }
+}
+
+/// Fisher–Yates shuffle with a small xorshift PRNG (no external RNG dep).
+fn shuffled_indices(order: &mut [usize], seed: u64) {
+    let mut state = seed.max(1);
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for i in (1..order.len()).rev() {
+        let j = (next() as usize) % (i + 1);
+        order.swap(i, j);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shuffle_is_a_permutation() {
+        let mut order: Vec<usize> = (0..20).collect();
+        shuffled_indices(&mut order, 42);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..20).collect::<Vec<usize>>());
+    }
+
+    #[test]
+    fn shuffle_is_deterministic_per_seed() {
+        let mut a: Vec<usize> = (0..50).collect();
+        shuffled_indices(&mut a, 7);
+        let mut b: Vec<usize> = (0..50).collect();
+        shuffled_indices(&mut b, 7);
+        assert_eq!(a, b);
     }
 }

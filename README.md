@@ -17,6 +17,9 @@ and audio decoding (played through [cpal](https://crates.io/crates/cpal)).
 - Slideshow mode (`S` or the `▶` button) auto-advances through images every
   few seconds (type a value in the `⚙` popup or pass `--interval`). Videos
   play to the end — the slideshow moves on only once a video finishes.
+- Playback settings (`⚙` popup): toggle video looping, include/exclude videos
+  from the rotation, shuffle (random) order, and crossfade transitions with a
+  configurable duration (typed in seconds).
 - The video progress bar appears when the mouse moves and fades away after a
   moment of inactivity.
 - Metadata panel (`I` or the `ⓘ` button): file size, modified date, and
