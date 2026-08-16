@@ -14,6 +14,7 @@ pub enum Icon {
     Play,
     Pause,
     Settings,
+    Tracks,
 }
 
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str) -> Response {
@@ -112,6 +113,21 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str) -> Response {
                     Stroke::new(1.4, color),
                 );
                 painter.circle_filled(pos2(c.x + knobs[i], *y), 2.0, color);
+            }
+        }
+        Icon::Tracks => {
+            for dy in [-3.0f32, 3.0] {
+                let y = c.y + dy;
+                let arrow = vec![
+                    pos2(c.x - 6.5, y - 2.5),
+                    pos2(c.x - 6.5, y + 2.5),
+                    pos2(c.x - 3.5, y),
+                ];
+                painter.add(Shape::convex_polygon(arrow, color, Stroke::NONE));
+                painter.line_segment(
+                    [pos2(c.x - 2.5, y), pos2(c.x + 6.5, y)],
+                    Stroke::new(1.4, color),
+                );
             }
         }
     }

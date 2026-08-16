@@ -3,18 +3,17 @@
 //! The video decode thread resamples decoded audio to interleaved `f32` and
 //! pushes it into a small ring buffer. The cpal callback — running on the audio
 //! device's thread — pulls samples out, converts them to the device's sample
-//! format, and feeds the hardware. When the ring buffer is full the decode
-//! thread blocks, so the audio hardware paces playback while the existing
-//! wall-clock logic paces the video.
+//! format, and feeds the hardware. Pushing is non-blocking: the video clock
+//! paces playback and the ring buffer only rides out jitter, so the decode
+//! thread never stalls on audio (which would make the video stutter).
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 
-/// How much audio to buffer before applying backpressure to the decode thread.
+/// How much audio to buffer to ride out decode/demux jitter.
 const BUFFER_SECS: f32 = 0.5;
 
 pub struct AudioOutput {
@@ -28,7 +27,6 @@ pub struct AudioOutput {
 
 struct AudioBuffer {
     buf: Mutex<VecDeque<f32>>,
-    space: Condvar,
     capacity: usize,
 }
 
@@ -36,48 +34,22 @@ impl AudioBuffer {
     fn new(seconds: f32, rate: u32) -> Self {
         Self {
             buf: Mutex::new(VecDeque::new()),
-            space: Condvar::new(),
             capacity: ((rate as f32) * seconds.max(0.05)) as usize,
         }
     }
 
-    /// Push interleaved f32 samples, blocking while the buffer is full so the
-    /// decode thread is paced to the audio hardware. If the device appears to
-    /// have wedged (no progress for a while) the rest is dropped instead of
-    /// hanging the decode thread. Samples are clamped to `[-1, 1]` to guard
-    /// against resampling overshoot clipping integer output devices.
+    /// Push interleaved f32 samples. Never blocks: if the buffer is full, the
+    /// oldest samples are dropped to keep the audio as current as possible.
+    /// Samples are clamped to `[-1, 1]` to guard against resampling overshoot
+    /// clipping integer output devices.
     fn push(&self, samples: &[f32]) {
         let mut buf = self.buf.lock().unwrap();
-        let mut pushed = 0usize;
-        let mut waited = Duration::ZERO;
-        while pushed < samples.len() {
-            while buf.len() >= self.capacity {
-                if waited > Duration::from_secs(2) {
-                    self.space.notify_all();
-                    return;
-                }
-                let (guard, _) = self
-                    .space
-                    .wait_timeout(buf, Duration::from_millis(100))
-                    .unwrap();
-                buf = guard;
-                waited += Duration::from_millis(100);
+        for &sample in samples {
+            if buf.len() >= self.capacity {
+                buf.pop_front();
             }
-            let room = self.capacity - buf.len();
-            let take = room.min(samples.len() - pushed);
-            buf.extend(
-                samples[pushed..pushed + take]
-                    .iter()
-                    .map(|s| s.clamp(-1.0, 1.0)),
-            );
-            pushed += take;
+            buf.push_back(sample.clamp(-1.0, 1.0));
         }
-        self.space.notify_all();
-    }
-
-    fn clear(&self) {
-        self.buf.lock().unwrap().clear();
-        self.space.notify_all();
     }
 }
 
@@ -112,14 +84,14 @@ impl AudioOutput {
         })
     }
 
-    /// Feed interleaved f32 samples (blocking when the buffer is full).
+    /// Feed interleaved f32 samples (never blocks).
     pub fn push(&self, samples: &[f32]) {
         self.buffer.push(samples);
     }
 
     /// Drop all buffered audio (pause / seek / loop / end).
     pub fn clear(&self) {
-        self.buffer.clear();
+        self.buffer.buf.lock().unwrap().clear();
     }
 }
 
@@ -161,7 +133,6 @@ where
                 let sample = buf.pop_front().unwrap_or(0.0);
                 *slot = T::from_sample(sample);
             }
-            buffer.space.notify_all();
         },
         move |err| log::warn!("audio stream error: {err:?}"),
         None,

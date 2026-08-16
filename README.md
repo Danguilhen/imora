@@ -13,7 +13,10 @@ and audio decoding (played through [cpal](https://crates.io/crates/cpal)).
 - Plays and loops videos in-app **with sound**; `Space` toggles play/pause
   (mutes while paused), drag the progress bar to seek. Audio is resampled to
   your output device; videos without sound, or machines without an audio
-  device, simply play silently.
+  device, simply play silently. Audio never stalls the video, so playback
+  stays smooth.
+- Videos with several audio/video streams get a **tracks** button in the
+  toolbar to switch between them (e.g. different languages or angles).
 - Slideshow mode (`S` or the `▶` button) auto-advances through images every
   few seconds (type a value in the `⚙` popup or pass `--interval`). Videos
   play to the end — the slideshow moves on only once a video finishes.

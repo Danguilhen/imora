@@ -46,12 +46,28 @@ pub struct PlayerState {
     pub error: Option<String>,
     /// True once a non-looping video has reached the end of the file.
     pub ended: bool,
+    /// Available video/audio tracks (stream index + label) and the current
+    /// selection.
+    pub video_tracks: Vec<TrackInfo>,
+    pub audio_tracks: Vec<TrackInfo>,
+    pub video_track: usize,
+    pub audio_track: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct TrackInfo {
+    pub stream_index: usize,
+    pub label: String,
 }
 
 enum Cmd {
     Play(bool),
     Seek(f64),
     SetLoop(bool),
+    SetTracks {
+        video_track: Option<usize>,
+        audio_track: Option<usize>,
+    },
     Stop,
 }
 
@@ -77,6 +93,10 @@ impl VideoPlayer {
             height: 0,
             error: None,
             ended: false,
+            video_tracks: Vec::new(),
+            audio_tracks: Vec::new(),
+            video_track: 0,
+            audio_track: None,
         }));
         let f2 = Arc::clone(&frame);
         let s2 = Arc::clone(&state);
@@ -116,6 +136,15 @@ impl VideoPlayer {
         let _ = self.tx.send(Cmd::SetLoop(looping));
     }
 
+    /// Switch the active video/audio stream (by stream index; `None` for audio
+    /// disables sound).
+    pub fn set_tracks(&self, video_track: Option<usize>, audio_track: Option<usize>) {
+        let _ = self.tx.send(Cmd::SetTracks {
+            video_track,
+            audio_track,
+        });
+    }
+
     pub fn frame(&self) -> Frame {
         self.frame.lock().map(|g| g.clone()).unwrap_or_default()
     }
@@ -144,8 +173,13 @@ struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    fn try_new(input: &mut ffmpeg::format::context::Input) -> Option<Self> {
-        let stream = input.streams().best(Type::Audio)?;
+    /// Decode and play the audio stream with the given index (`None` → no audio).
+    fn try_new(
+        input: &mut ffmpeg::format::context::Input,
+        stream_index: Option<usize>,
+    ) -> Option<Self> {
+        let stream_index = stream_index?;
+        let stream = input.streams().find(|s| s.index() == stream_index)?;
         let index = stream.index();
         let context = CodecContext::from_parameters(stream.parameters()).ok()?;
         let decoder = context.decoder().audio().ok()?;
@@ -210,6 +244,86 @@ impl AudioPlayer {
     }
 }
 
+/// Rebuild the active video/audio decoders for the given streams and resync
+/// playback to the current position.
+#[allow(clippy::too_many_arguments)]
+fn switch_tracks(
+    input: &mut ffmpeg::format::context::Input,
+    video_track: Option<usize>,
+    audio_track: Option<usize>,
+    stream_idx: &mut usize,
+    timebase: &mut ffmpeg::Rational,
+    decoder: &mut ffmpeg::codec::decoder::Video,
+    scaler: &mut ScalingContext,
+    vw: &mut u32,
+    vh: &mut u32,
+    audio: &mut Option<AudioPlayer>,
+    audio_stream_idx: &mut Option<usize>,
+    st: &Arc<Mutex<PlayerState>>,
+    start_pts: &mut f64,
+    start_time: &mut Instant,
+) {
+    let mut switched = false;
+
+    // Video stream.
+    if let Some(new_video) = video_track {
+        if new_video != *stream_idx {
+            if let Some(s) = input.streams().find(|s| s.index() == new_video) {
+                if let Ok(context) = CodecContext::from_parameters(s.parameters()) {
+                    if let Ok(new_decoder) = context.decoder().video() {
+                        let nw = new_decoder.width();
+                        let nh = new_decoder.height();
+                        if let Ok(new_scaler) = ScalingContext::get(
+                            new_decoder.format(),
+                            nw,
+                            nh,
+                            Pixel::RGB24,
+                            nw,
+                            nh,
+                            Flags::BILINEAR,
+                        ) {
+                            *decoder = new_decoder;
+                            *scaler = new_scaler;
+                            *stream_idx = new_video;
+                            *timebase = s.time_base();
+                            *vw = nw;
+                            *vh = nh;
+                            if let Ok(mut s2) = st.lock() {
+                                s2.width = nw;
+                                s2.height = nh;
+                            }
+                            switched = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Audio stream (`None` disables sound).
+    if audio_track != *audio_stream_idx {
+        *audio = AudioPlayer::try_new(input, audio_track);
+        *audio_stream_idx = audio_track;
+        switched = true;
+    }
+
+    if switched {
+        let t = st.lock().map(|s| s.position).unwrap_or(0.0);
+        let _ = input.seek((t * AV_TIME_BASE) as i64, ..);
+        decoder.flush();
+        *start_pts = t;
+        *start_time = Instant::now();
+        if let Some(a) = audio.as_mut() {
+            a.flush();
+        }
+        if let Ok(mut s) = st.lock() {
+            s.ended = false;
+            s.video_track = video_track.unwrap_or(*stream_idx);
+            s.audio_track = *audio_stream_idx;
+        }
+    }
+}
+
 fn decode_loop(
     path: &Path,
     looping: bool,
@@ -218,13 +332,43 @@ fn decode_loop(
     st: &Arc<Mutex<PlayerState>>,
 ) -> Result<(), String> {
     let mut input = ffmpeg::format::input(path).map_err(|e| format!("cannot open: {e}"))?;
-    let stream = input.streams().best(Type::Video).ok_or("no video stream")?;
-    let stream_idx = stream.index();
-    let timebase = stream.time_base();
+
+    // Enumerate the tracks so the UI can offer switching between them.
+    let mut video_tracks: Vec<TrackInfo> = Vec::new();
+    let mut audio_tracks: Vec<TrackInfo> = Vec::new();
+    for s in input.streams() {
+        match s.parameters().medium() {
+            Type::Video => video_tracks.push(TrackInfo {
+                stream_index: s.index(),
+                label: stream_label(&s),
+            }),
+            Type::Audio => audio_tracks.push(TrackInfo {
+                stream_index: s.index(),
+                label: stream_label(&s),
+            }),
+            _ => {}
+        }
+    }
+
+    let default_video = input.streams().best(Type::Video);
+    let mut stream_idx = default_video
+        .as_ref()
+        .map(|s| s.index())
+        .or_else(|| video_tracks.first().map(|t| t.stream_index))
+        .unwrap_or(0);
+    let stream = default_video
+        .or_else(|| input.streams().find(|s| s.index() == stream_idx))
+        .ok_or("no video stream")?;
+    let mut timebase = stream.time_base();
     let context = CodecContext::from_parameters(stream.parameters()).map_err(|e| e.to_string())?;
     let mut decoder = context.decoder().video().map_err(|e| e.to_string())?;
-    let (vw, vh) = (decoder.width(), decoder.height());
+    let (mut vw, mut vh) = (decoder.width(), decoder.height());
     let duration = input.duration() as f64 / AV_TIME_BASE;
+    let mut audio_stream_idx = input
+        .streams()
+        .best(Type::Audio)
+        .map(|s| s.index())
+        .or_else(|| audio_tracks.first().map(|t| t.stream_index));
 
     {
         let mut s = st.lock().unwrap();
@@ -234,6 +378,10 @@ fn decode_loop(
         s.width = vw;
         s.height = vh;
         s.error = None;
+        s.video_tracks = video_tracks;
+        s.audio_tracks = audio_tracks;
+        s.video_track = stream_idx;
+        s.audio_track = audio_stream_idx;
     }
 
     let mut scaler = ScalingContext::get(
@@ -249,7 +397,7 @@ fn decode_loop(
 
     // Optional audio: only active if the file has an audio track and we can
     // open an output device. Otherwise playback stays silent.
-    let mut audio = AudioPlayer::try_new(&mut input);
+    let mut audio = AudioPlayer::try_new(&mut input, audio_stream_idx);
 
     let mut playing = true;
     let mut looping = looping;
@@ -265,6 +413,25 @@ fn decode_loop(
             match rx.try_recv() {
                 Ok(Cmd::Stop) => return Ok(()),
                 Ok(Cmd::SetLoop(b)) => looping = b,
+                Ok(Cmd::SetTracks {
+                    video_track,
+                    audio_track,
+                }) => switch_tracks(
+                    &mut input,
+                    video_track,
+                    audio_track,
+                    &mut stream_idx,
+                    &mut timebase,
+                    &mut decoder,
+                    &mut scaler,
+                    &mut vw,
+                    &mut vh,
+                    &mut audio,
+                    &mut audio_stream_idx,
+                    st,
+                    &mut start_pts,
+                    &mut start_time,
+                ),
                 Ok(Cmd::Play(p)) => {
                     if playing != p {
                         playing = p;
@@ -321,6 +488,25 @@ fn decode_loop(
             match rx.recv_timeout(Duration::from_millis(16)) {
                 Ok(Cmd::Stop) => return Ok(()),
                 Ok(Cmd::SetLoop(b)) => looping = b,
+                Ok(Cmd::SetTracks {
+                    video_track,
+                    audio_track,
+                }) => switch_tracks(
+                    &mut input,
+                    video_track,
+                    audio_track,
+                    &mut stream_idx,
+                    &mut timebase,
+                    &mut decoder,
+                    &mut scaler,
+                    &mut vw,
+                    &mut vh,
+                    &mut audio,
+                    &mut audio_stream_idx,
+                    st,
+                    &mut start_pts,
+                    &mut start_time,
+                ),
                 Ok(Cmd::Play(p)) => {
                     playing = p;
                     if let Ok(mut s) = st.lock() {
@@ -538,6 +724,22 @@ pub fn grab_frame(path: &Path, max_dim: u32) -> Result<(Vec<u8>, u32, u32), Stri
         }
     }
     Err("no frame".into())
+}
+
+/// Human-readable label for a stream: "language · codec", or a fallback.
+fn stream_label(stream: &ffmpeg::format::stream::Stream) -> String {
+    let codec = stream.parameters().id().name().to_string();
+    let language = stream
+        .metadata()
+        .get("language")
+        .unwrap_or_default()
+        .to_string();
+    match (language.is_empty(), codec.is_empty()) {
+        (false, false) => format!("{language} · {codec}"),
+        (false, true) => language,
+        (true, false) => codec,
+        (true, true) => format!("Stream {}", stream.index()),
+    }
 }
 
 fn frame_from(v: &Video, pts: f64) -> Frame {

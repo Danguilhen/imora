@@ -943,6 +943,63 @@ impl ImoraApp {
                                     ui.close();
                                 }
                             });
+
+                        // Track switching (only when the video has alternatives).
+                        if let Some(Loaded::Video(player)) = &self.loaded {
+                            let st = player.state();
+                            if st.video_tracks.len() > 1 || st.audio_tracks.len() > 1 {
+                                let tb =
+                                    icons::icon_button(ui, Icon::Tracks, "Audio / video tracks");
+                                egui::Popup::menu(&tb)
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(220.0);
+                                        if st.video_tracks.len() > 1 {
+                                            ui.label(RichText::new("Video").strong().size(13.0));
+                                            for track in &st.video_tracks {
+                                                if ui
+                                                    .selectable_label(
+                                                        track.stream_index == st.video_track,
+                                                        &track.label,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    player.set_tracks(
+                                                        Some(track.stream_index),
+                                                        st.audio_track,
+                                                    );
+                                                }
+                                            }
+                                            ui.add_space(6.0);
+                                        }
+                                        if st.audio_tracks.len() > 1 {
+                                            ui.label(RichText::new("Audio").strong().size(13.0));
+                                            if ui
+                                                .selectable_label(
+                                                    st.audio_track.is_none(),
+                                                    "No audio",
+                                                )
+                                                .clicked()
+                                            {
+                                                player.set_tracks(Some(st.video_track), None);
+                                            }
+                                            for track in &st.audio_tracks {
+                                                let selected =
+                                                    Some(track.stream_index) == st.audio_track;
+                                                if ui
+                                                    .selectable_label(selected, &track.label)
+                                                    .clicked()
+                                                {
+                                                    player.set_tracks(
+                                                        Some(st.video_track),
+                                                        Some(track.stream_index),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    });
+                            }
+                        }
                     });
                 });
             });
