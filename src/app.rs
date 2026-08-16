@@ -14,6 +14,7 @@ use eframe::egui::{
 
 use crate::browser::{BrowserAction, FolderBrowser};
 use crate::media::{self, AnimatedFrame, MediaItem, MediaKind};
+use crate::metadata::{self, MediaInfo};
 use crate::thumbs::{self, ThumbJob, ThumbResult};
 use crate::video::{PlayerState, VideoPlayer};
 
@@ -105,6 +106,18 @@ pub struct ImoraApp {
     slideshow_last: Instant,
 
     browser: Option<FolderBrowser>,
+
+    show_info: bool,
+    info_loading: bool,
+    info_path: Option<PathBuf>,
+    info: Option<MediaInfo>,
+    info_tx: Sender<InfoOutcome>,
+    info_rx: Receiver<InfoOutcome>,
+}
+
+struct InfoOutcome {
+    path: PathBuf,
+    info: MediaInfo,
 }
 
 struct ThumbEntry {
@@ -125,6 +138,7 @@ impl ImoraApp {
         let (load_tx, load_rx) = mpsc::channel();
         let (thumb_job_tx, thumb_job_rx) = mpsc::channel();
         let (thumb_res_tx, thumb_res_rx) = mpsc::channel();
+        let (info_tx, info_rx) = mpsc::channel();
         std::thread::spawn(move || {
             while let Ok(job) = thumb_job_rx.recv() {
                 if let Some(res) = thumbs::make_thumb(&job) {
@@ -171,6 +185,12 @@ impl ImoraApp {
             interval_text: "2".to_string(),
             slideshow_last: Instant::now(),
             browser: None,
+            show_info: false,
+            info_loading: false,
+            info_path: None,
+            info: None,
+            info_tx,
+            info_rx,
         };
 
         if let Some(path) = folder {
@@ -353,6 +373,13 @@ impl ImoraApp {
         }
         if ctx.input(|i| i.key_pressed(Key::S)) {
             self.toggle_slideshow();
+        }
+        if ctx.input(|i| i.key_pressed(Key::I)) {
+            self.show_info = !self.show_info;
+            if self.show_info {
+                self.info_path = None;
+                self.info = None;
+            }
         }
         if ctx.input(|i| i.key_pressed(Key::O)) {
             self.open_folder_dialog();
@@ -575,6 +602,35 @@ impl ImoraApp {
         self.loaded.is_none() || self.fade < 1.0
     }
 
+    /// Keeps the info panel in sync with the current media: re-gathers
+    /// metadata in the background whenever the item changes.
+    fn update_info(&mut self) {
+        if !self.show_info {
+            return;
+        }
+        let current = self.items.get(self.index).map(|i| i.path.clone());
+        if current != self.info_path {
+            self.info_path = current;
+            self.info = None;
+            let Some(path) = self.info_path.clone() else {
+                self.info_loading = false;
+                return;
+            };
+            self.info_loading = true;
+            let tx = self.info_tx.clone();
+            std::thread::spawn(move || {
+                let info = metadata::gather(&path);
+                let _ = tx.send(InfoOutcome { path, info });
+            });
+        }
+        while let Ok(outcome) = self.info_rx.try_recv() {
+            if self.info_path.as_deref() == Some(outcome.path.as_path()) {
+                self.info = Some(outcome.info);
+                self.info_loading = false;
+            }
+        }
+    }
+
     fn tick_slideshow(&mut self, ctx: &egui::Context) {
         if !self.slideshow || self.items.len() <= 1 {
             return;
@@ -641,6 +697,11 @@ impl ImoraApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
                             self.toggle_fullscreen(ui.ctx());
+                        }
+                        if ui.button("ⓘ").on_hover_text("Metadata (I)").clicked() {
+                            self.show_info = !self.show_info;
+                            self.info_path = None;
+                            self.info = None;
                         }
                         if ui.button("▤").on_hover_text("Filmstrip (G)").clicked() {
                             self.show_strip = !self.show_strip;
@@ -1038,6 +1099,38 @@ impl ImoraApp {
             .map(|i| i.name.clone())
             .unwrap_or_default()
     }
+
+    fn info_window(&mut self, ctx: &egui::Context) {
+        egui::Window::new("Metadata")
+            .collapsible(false)
+            .resizable(false)
+            .default_size([360.0, 280.0])
+            .open(&mut self.show_info)
+            .show(ctx, |ui| match &self.info {
+                Some(info) => {
+                    ui.label(RichText::new(truncate(&info.title, 60)).strong().size(14.0));
+                    ui.add_space(4.0);
+                    ui.separator();
+                    egui::Grid::new("metadata-grid")
+                        .num_columns(2)
+                        .striped(true)
+                        .spacing(vec2(16.0, 4.0))
+                        .show(ui, |ui| {
+                            for (key, value) in &info.entries {
+                                ui.label(RichText::new(key).color(MUTED));
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                }
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(if self.info_loading { "Loading…" } else { "" });
+                    });
+                }
+            });
+    }
 }
 
 impl eframe::App for ImoraApp {
@@ -1090,6 +1183,7 @@ impl eframe::App for ImoraApp {
         self.poll_load(ctx);
         self.poll_thumbs(ctx);
         self.tick_animation(ctx, dt);
+        self.update_info();
 
         self.fade = (self.fade + dt / 0.16).min(1.0);
 
@@ -1137,6 +1231,10 @@ impl eframe::App for ImoraApp {
                 self.browser = None;
             }
             BrowserAction::None => {}
+        }
+
+        if self.show_info {
+            self.info_window(ui.ctx());
         }
     }
 }

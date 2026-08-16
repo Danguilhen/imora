@@ -19,6 +19,8 @@ and audio decoding (played through [cpal](https://crates.io/crates/cpal)).
   play to the end — the slideshow moves on only once a video finishes.
 - The video progress bar appears when the mouse moves and fades away after a
   moment of inactivity.
+- Metadata panel (`I` or the `ⓘ` button): file size, modified date, and
+  image/video details (dimensions, duration, codecs, bitrate, container, …)
 - Fullscreen shows nothing but the media itself (move the mouse to reveal the video progress bar)
 - Filmstrip of lazy-generated thumbnails, hidden by default — press `G` (or the
   `▤` button) to toggle it (click a thumbnail to jump)
@@ -87,7 +89,8 @@ OPTIONS:
 | drag           | Pan when zoomed                       |
 | `F` / dbl-click| Toggle fullscreen                    |
 | `G`            | Toggle filmstrip                      |
-| `O`            | Open a folder (built-in browser)     |
+| `I`            | Toggle metadata panel                 |
+| `O`            | Open a folder (built-in browser)      |
 | `E`            | Open current file with system player  |
 
 ## Structure
@@ -99,6 +102,7 @@ src/
   audio.rs   cpal audio output (device format, ring buffer, backpressure)
   browser.rs built-in folder browser (⌂ / O)
   media.rs   folder scanning + image/GIF/WebP decoding
+  metadata.rs metadata panel (file size, date, dimensions, codecs, …)
   video.rs   background FFmpeg decode thread (video + audio, play/pause/seek/loop)
   thumbs.rs  lazy thumbnail generation for the filmstrip
 ```
