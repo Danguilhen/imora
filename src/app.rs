@@ -13,6 +13,7 @@ use eframe::egui::{
 };
 
 use crate::browser::{BrowserAction, FolderBrowser};
+use crate::icons::{self, Icon};
 use crate::media::{self, AnimatedFrame, MediaItem, MediaKind};
 use crate::metadata::{self, MediaInfo};
 use crate::thumbs::{self, ThumbJob, ThumbResult};
@@ -406,7 +407,9 @@ impl ImoraApp {
         let mut order: Vec<usize> = if self.include_video {
             (0..n).collect()
         } else {
-            (0..n).filter(|&i| self.items[i].kind == MediaKind::Image).collect()
+            (0..n)
+                .filter(|&i| self.items[i].kind == MediaKind::Image)
+                .collect()
         };
         if self.shuffle {
             let seed = std::time::SystemTime::now()
@@ -719,6 +722,17 @@ impl ImoraApp {
         self.loaded.is_none() || self.fade < 1.0 || self.prev.is_some()
     }
 
+    /// How long a media transition takes. With crossfade enabled both the old
+    /// and the new media fade over the configured duration; otherwise it's a
+    /// quick fade-in.
+    fn transition_duration(&self) -> f32 {
+        if self.crossfade {
+            self.crossfade_secs.max(0.05)
+        } else {
+            0.16
+        }
+    }
+
     /// Keeps the info panel in sync with the current media: re-gathers
     /// metadata in the background whenever the item changes.
     fn update_info(&mut self) {
@@ -820,32 +834,37 @@ impl ImoraApp {
                     ui.label(RichText::new(truncate(&self.current_name(), 40)).color(TEXT));
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
+                        if icons::icon_button(ui, Icon::Fullscreen, "Fullscreen (F)").clicked() {
                             self.toggle_fullscreen(ui.ctx());
                         }
-                        if ui.button("ⓘ").on_hover_text("Metadata (I)").clicked() {
+                        if icons::icon_button(ui, Icon::Info, "Metadata (I)").clicked() {
                             self.show_info = !self.show_info;
                             self.info_path = None;
                             self.info = None;
                         }
-                        if ui.button("▤").on_hover_text("Filmstrip (G)").clicked() {
+                        if icons::icon_button(ui, Icon::Filmstrip, "Filmstrip (G)").clicked() {
                             self.show_strip = !self.show_strip;
                         }
-                        if ui.button("⌂").on_hover_text("Open folder (O)").clicked() {
+                        if icons::icon_button(ui, Icon::Folder, "Open folder (O)").clicked() {
                             self.open_folder_dialog();
                         }
 
                         // Slideshow quick toggle + settings.
-                        let label = if self.slideshow {
-                            format!("⏸  {:.1}s", self.slide_interval)
+                        let play_icon = if self.slideshow {
+                            Icon::Pause
                         } else {
-                            format!("▶  {:.1}s", self.slide_interval)
+                            Icon::Play
                         };
-                        let sb = ui.button(label).on_hover_text("Slideshow (S)");
+                        let sb = icons::icon_button(ui, play_icon, "Slideshow (S)");
                         if sb.clicked() {
                             self.toggle_slideshow();
                         }
-                        let gb = ui.button("⚙").on_hover_text("Settings");
+                        ui.label(
+                            RichText::new(format!("{:.1}s", self.slide_interval))
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                        let gb = icons::icon_button(ui, Icon::Settings, "Settings");
                         egui::Popup::menu(&gb)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                             .show(|ui| {
@@ -898,8 +917,7 @@ impl ImoraApp {
                                 }
                                 if self.crossfade {
                                     if ui.memory(|m| m.focused().is_none()) {
-                                        self.crossfade_text =
-                                            format!("{}", self.crossfade_secs);
+                                        self.crossfade_text = format!("{}", self.crossfade_secs);
                                     }
                                     ui.horizontal(|ui| {
                                         ui.label("Crossfade");
@@ -1374,7 +1392,7 @@ impl eframe::App for ImoraApp {
         self.tick_animation(ctx, dt);
         self.update_info();
 
-        self.fade = (self.fade + dt / 0.16).min(1.0);
+        self.fade = (self.fade + dt / self.transition_duration()).min(1.0);
 
         // Advance any active crossfade transition.
         if self.prev.is_some() {

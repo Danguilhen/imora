@@ -3,6 +3,7 @@
 mod app;
 mod audio;
 mod browser;
+mod icons;
 mod media;
 mod metadata;
 mod thumbs;
