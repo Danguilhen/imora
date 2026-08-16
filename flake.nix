@@ -83,5 +83,61 @@
             '';
           };
         });
+
+      packages = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.rustPlatform.buildRustPackage {
+            pname = "imora";
+            version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+              clang
+              copyDesktopItems
+            ];
+
+            buildInputs = with pkgs; [
+              ffmpeg_8
+              libGL
+              libxkbcommon
+              wayland
+              libxcb
+              libx11
+              libxrandr
+              libxi
+              libxcursor
+              libxext
+              libxrender
+              fontconfig
+              freetype
+            ];
+
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+
+            desktopItems = [
+              (pkgs.makeDesktopItem {
+                name = "imora";
+                exec = "imora";
+                desktopName = "imora";
+                genericName = "Media gallery";
+                categories = [ "Graphics" "Viewer" ];
+                startupNotify = false;
+              })
+            ];
+
+            meta = with pkgs.lib; {
+              description = "A lightweight, elegant media gallery";
+              homepage = "https://github.com/Danguilhen/imora";
+              license = with licenses; [ mit asl20 ];
+              mainProgram = "imora";
+              platforms = [ "x86_64-linux" "aarch64-linux" ];
+            };
+          };
+        });
     };
 }
