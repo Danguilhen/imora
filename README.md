@@ -5,12 +5,15 @@ its pictures and videos with the arrow keys.
 
 Built with [eframe/egui](https://github.com/emilk/egui) (OpenGL renderer) for
 the UI, the `image` crate for stills, and FFmpeg (via `ffmpeg-next`) for video
-decoding. No audio yet — videos play visually, in-app.
+and audio decoding (played through [cpal](https://crates.io/crates/cpal)).
 
 ## Features
 
 - Arrow keys (←/→/↑/↓), PageUp/PageDown, Home/End to browse
-- Plays and loops videos in-app; `Space` toggles play/pause, drag the progress bar to seek
+- Plays and loops videos in-app **with sound**; `Space` toggles play/pause
+  (mutes while paused), drag the progress bar to seek. Audio is resampled to
+  your output device; videos without sound, or machines without an audio
+  device, simply play silently.
 - Slideshow mode (`S` or the `▶` button) auto-advances through images every
   few seconds (type a value in the `⚙` popup or pass `--interval`). Videos
   play to the end — the slideshow moves on only once a video finishes.
@@ -93,8 +96,10 @@ OPTIONS:
 src/
   main.rs    CLI parsing + app bootstrap
   app.rs     eframe UI: layout, keys, filmstrip, transitions
+  audio.rs   cpal audio output (device format, ring buffer, backpressure)
+  browser.rs built-in folder browser (⌂ / O)
   media.rs   folder scanning + image/GIF/WebP decoding
-  video.rs   background FFmpeg decode thread (play/pause/seek/loop)
+  video.rs   background FFmpeg decode thread (video + audio, play/pause/seek/loop)
   thumbs.rs  lazy thumbnail generation for the filmstrip
 ```
 
@@ -102,5 +107,9 @@ src/
 
 - FFmpeg is expected in the dev shell; if it is unavailable at runtime, videos
   simply report an error in-app while images keep working.
+- Audio plays via the ALSA backend of cpal (`alsa-lib` is part of the dev
+  shell). On a PipeWire system the ALSA "default" device usually routes to
+  PipeWire; if you hear nothing, `cpal` can be switched to its `pulse` feature
+  instead.
 - AVIF decoding is not enabled yet (needs `libdav1d`); the common still formats
   (JPEG, PNG, WebP, GIF, BMP, TIFF, ICO, EXR, …) are supported.

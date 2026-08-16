@@ -8,7 +8,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico", "qoi", "pnm", "dds", "tga", "exr"] }
-ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-scaling"] }
+ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"] }
+cpal = "0.18"
 log = "0.4"
 env_logger = "0.11"
 

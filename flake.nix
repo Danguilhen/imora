@@ -30,6 +30,9 @@
         clang
         libclang.lib
 
+        # --- Audio output (cpal) ---
+        alsa-lib
+
         # --- Windowing / OpenGL for eframe (glow renderer) ---
         libGL
         libxkbcommon
@@ -73,6 +76,7 @@
               pkgs.fontconfig
               pkgs.freetype
               pkgs.ffmpeg_8
+              pkgs.alsa-lib
             ];
 
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";

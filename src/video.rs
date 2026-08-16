@@ -1,7 +1,8 @@
-//! FFmpeg-based video frame decoder running on a background thread.
+//! FFmpeg-based video/audio decoder running on a background thread.
 //!
-//! The decoder produces raw RGB24 frames paced to the video timeline; the UI
-//! thread reads the latest frame each repaint. No audio is played yet.
+//! The decoder produces raw RGB24 frames paced to the video timeline and, when
+//! the file and an output device are available, feeds resampled audio to the
+//! sound card; the UI thread reads the latest frame each repaint.
 
 use ffmpeg_next as ffmpeg;
 use std::path::{Path, PathBuf};
@@ -10,11 +11,17 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::audio::AudioOutput;
 use ffmpeg::codec::context::Context as CodecContext;
+use ffmpeg::codec::decoder::Audio as AudioDecoder;
+use ffmpeg::format::sample::Type as SampleType;
 use ffmpeg::format::Pixel;
 use ffmpeg::media::Type;
+use ffmpeg::software::resampling::Context as Resampler;
 use ffmpeg::software::scaling::flag::Flags;
 use ffmpeg::software::scaling::Context as ScalingContext;
+use ffmpeg::util::channel_layout::ChannelLayout;
+use ffmpeg::util::frame::audio::Audio as AudioFrame;
 use ffmpeg::util::frame::video::Video;
 
 /// AV_TIME_BASE — FFmpeg's internal timestamp resolution (microseconds).
@@ -127,6 +134,78 @@ impl Drop for VideoPlayer {
     }
 }
 
+/// Decodes and plays the audio stream of a video.
+struct AudioPlayer {
+    index: usize,
+    decoder: AudioDecoder,
+    resampler: Resampler,
+    frame: AudioFrame,
+    output: AudioOutput,
+}
+
+impl AudioPlayer {
+    fn try_new(input: &mut ffmpeg::format::context::Input) -> Option<Self> {
+        let stream = input.streams().best(Type::Audio)?;
+        let index = stream.index();
+        let context = CodecContext::from_parameters(stream.parameters()).ok()?;
+        let decoder = context.decoder().audio().ok()?;
+        let output = AudioOutput::try_new()?;
+
+        let src_format = decoder.format();
+        let src_layout = decoder.channel_layout();
+        let src_rate = decoder.rate();
+        let dst_format = ffmpeg::format::Sample::F32(SampleType::Packed);
+        let dst_layout = ChannelLayout::default(output.channels as i32);
+        let dst_rate = output.sample_rate;
+        let resampler = Resampler::get(
+            src_format, src_layout, src_rate, dst_format, dst_layout, dst_rate,
+        )
+        .ok()?;
+
+        log::info!(
+            "audio: {} Hz, {} ch -> device {} Hz, {} ch",
+            src_rate,
+            decoder.channels(),
+            dst_rate,
+            output.channels,
+        );
+        Some(Self {
+            index,
+            decoder,
+            resampler,
+            frame: AudioFrame::empty(),
+            output,
+        })
+    }
+
+    fn send_packet(&mut self, packet: &ffmpeg::packet::Packet) {
+        if self.decoder.send_packet(packet).is_err() {
+            return;
+        }
+        while self.decoder.receive_frame(&mut self.frame).is_ok() {
+            let mut converted = AudioFrame::empty();
+            if self.resampler.run(&self.frame, &mut converted).is_ok() {
+                let samples = converted.samples();
+                let channels = converted.channels() as usize;
+                let data = converted.plane::<f32>(0);
+                let count = samples.saturating_mul(channels);
+                self.output.push(&data[..count.min(data.len())]);
+            }
+        }
+    }
+
+    /// Flush the decoder (after a seek/loop) and drop buffered audio.
+    fn flush(&mut self) {
+        self.decoder.flush();
+        self.output.clear();
+    }
+
+    /// Drop buffered audio (pause / end) without touching the decoder.
+    fn clear(&self) {
+        self.output.clear();
+    }
+}
+
 fn decode_loop(
     path: &Path,
     looping: bool,
@@ -164,6 +243,10 @@ fn decode_loop(
     )
     .map_err(|e| format!("cannot create scaler: {e}"))?;
 
+    // Optional audio: only active if the file has an audio track and we can
+    // open an output device. Otherwise playback stays silent.
+    let mut audio = AudioPlayer::try_new(&mut input);
+
     let mut playing = true;
     let mut looping = looping;
     let mut pending_seek: Option<f64> = None;
@@ -194,6 +277,9 @@ fn decode_loop(
                                 if let Ok(mut s) = st.lock() {
                                     s.ended = false;
                                 }
+                                if let Some(a) = audio.as_mut() {
+                                    a.flush();
+                                }
                             }
                             // Restart the pacing clock so we don't fast-forward
                             // to catch up with the paused time.
@@ -203,6 +289,9 @@ fn decode_loop(
                             // resume continues smoothly from this position.
                             start_pts = st.lock().map(|s| s.position).unwrap_or(start_pts);
                             start_time = Instant::now();
+                            if let Some(a) = audio.as_ref() {
+                                a.clear();
+                            }
                         }
                     }
                 }
@@ -218,6 +307,9 @@ fn decode_loop(
             start_time = Instant::now();
             if let Ok(mut s) = st.lock() {
                 s.ended = false;
+            }
+            if let Some(a) = audio.as_mut() {
+                a.flush();
             }
         }
 
@@ -238,6 +330,9 @@ fn decode_loop(
                             if let Ok(mut s) = st.lock() {
                                 s.ended = false;
                             }
+                            if let Some(a) = audio.as_mut() {
+                                a.flush();
+                            }
                         }
                         start_time = Instant::now();
                     }
@@ -251,6 +346,9 @@ fn decode_loop(
                     start_time = Instant::now();
                     if let Ok(mut s) = st.lock() {
                         s.ended = false;
+                    }
+                    if let Some(a) = audio.as_mut() {
+                        a.flush();
                     }
                     if let Some(pts) = decode_until_frame(
                         &mut input,
@@ -306,6 +404,11 @@ fn decode_loop(
                     }
                 }
             }
+            Some((stream, packet)) if audio.as_ref().is_some_and(|a| a.index == stream.index()) => {
+                if let Some(a) = audio.as_mut() {
+                    a.send_packet(&packet);
+                }
+            }
             Some(_) => {}
             None => {
                 // End of file.
@@ -315,6 +418,9 @@ fn decode_loop(
                     decoder.flush();
                     start_pts = 0.0;
                     start_time = Instant::now();
+                    if let Some(a) = audio.as_mut() {
+                        a.flush();
+                    }
                 } else {
                     // Stop and report the end so e.g. the slideshow can move on.
                     if let Ok(mut s) = st.lock() {
@@ -322,6 +428,9 @@ fn decode_loop(
                         s.playing = false;
                     }
                     playing = false;
+                    if let Some(a) = audio.as_ref() {
+                        a.clear();
+                    }
                 }
             }
         }
