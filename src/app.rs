@@ -173,8 +173,11 @@ impl ImoraApp {
             browser: None,
         };
 
-        if let Some(dir) = folder {
-            app.set_folder(dir);
+        if let Some(path) = folder {
+            // Accept a folder OR a single media file. For a file, open its
+            // parent folder positioned at that file, so the user can arrow to
+            // neighbouring media afterwards.
+            app.open_path(&path);
         }
         app
     }

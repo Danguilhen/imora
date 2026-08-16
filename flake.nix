@@ -152,6 +152,33 @@
                 genericName = "Media gallery";
                 categories = [ "Graphics" "Viewer" ];
                 startupNotify = false;
+                # Everything classify() accepts in media.rs. Opening a file
+                # positions the gallery at that file (see ImoraApp::new).
+                mimeTypes = [
+                  "image/jpeg"
+                  "image/png"
+                  "image/gif"
+                  "image/webp"
+                  "image/bmp"
+                  "image/tiff"
+                  "image/vnd.microsoft.icon"
+                  "image/x-qoi"
+                  "image/x-portable-anymap"
+                  "image/x-dds"
+                  "image/x-tga"
+                  "image/x-exr"
+                  "video/mp4"
+                  "video/x-matroska"
+                  "video/webm"
+                  "video/quicktime"
+                  "video/x-msvideo"
+                  "video/mpeg"
+                  "video/ogg"
+                  "video/x-ms-wmv"
+                  "video/x-flv"
+                  "video/3gpp"
+                  "video/mp2t"
+                ];
               })
             ];
 
