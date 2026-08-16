@@ -89,7 +89,24 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
-          default = pkgs.rustPlatform.buildRustPackage {
+          default = let
+            runtimeLibs = with pkgs; lib.makeLibraryPath [
+              ffmpeg_8
+              libGL
+              libxkbcommon
+              wayland
+              libxcb
+              libx11
+              libxrandr
+              libxi
+              libxcursor
+              libxext
+              libxrender
+              fontconfig
+              freetype
+            ];
+          in
+          pkgs.rustPlatform.buildRustPackage {
             pname = "imora";
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
             src = ./.;
@@ -118,6 +135,14 @@
             ];
 
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+
+            # winit/glutin dlopen libwayland/libGL/libEGL at runtime instead of
+            # linking them, so a plain buildRustPackage RUNPATH (which only
+            # covers directly-linked libs) leaves them unfindable. Add every
+            # runtime lib dir to the RUNPATH explicitly.
+            postFixup = ''
+              patchelf --add-rpath "${runtimeLibs}" "$out/bin/imora"
+            '';
 
             desktopItems = [
               (pkgs.makeDesktopItem {
