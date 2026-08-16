@@ -44,7 +44,8 @@ impl AudioBuffer {
     /// Push interleaved f32 samples, blocking while the buffer is full so the
     /// decode thread is paced to the audio hardware. If the device appears to
     /// have wedged (no progress for a while) the rest is dropped instead of
-    /// hanging the decode thread.
+    /// hanging the decode thread. Samples are clamped to `[-1, 1]` to guard
+    /// against resampling overshoot clipping integer output devices.
     fn push(&self, samples: &[f32]) {
         let mut buf = self.buf.lock().unwrap();
         let mut pushed = 0usize;
@@ -64,7 +65,11 @@ impl AudioBuffer {
             }
             let room = self.capacity - buf.len();
             let take = room.min(samples.len() - pushed);
-            buf.extend(samples[pushed..pushed + take].iter().copied());
+            buf.extend(
+                samples[pushed..pushed + take]
+                    .iter()
+                    .map(|s| s.clamp(-1.0, 1.0)),
+            );
             pushed += take;
         }
         self.space.notify_all();

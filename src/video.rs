@@ -185,11 +185,15 @@ impl AudioPlayer {
         while self.decoder.receive_frame(&mut self.frame).is_ok() {
             let mut converted = AudioFrame::empty();
             if self.resampler.run(&self.frame, &mut converted).is_ok() {
-                let samples = converted.samples();
-                let channels = converted.channels() as usize;
-                let data = converted.plane::<f32>(0);
-                let count = samples.saturating_mul(channels);
-                self.output.push(&data[..count.min(data.len())]);
+                // `plane::<f32>(0)` only exposes `nb_samples` (per-channel)
+                // values, but a packed frame holds `nb_samples × channels`
+                // interleaved samples — reading just the plane would drop half
+                // of every stereo frame. Read the whole buffer instead.
+                let bytes = converted.data(0);
+                let floats = unsafe {
+                    std::slice::from_raw_parts(bytes.as_ptr() as *const f32, bytes.len() / 4)
+                };
+                self.output.push(floats);
             }
         }
     }
