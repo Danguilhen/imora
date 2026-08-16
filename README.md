@@ -72,7 +72,7 @@ OPTIONS:
                          window decorations disabled.
     -f, --fullscreen     Start in fullscreen
     -i, --interval <SECONDS>
-                         Slideshow interval between items (default: 2.0)
+                         Slideshow interval between items (default: 3.0)
     -s, --slideshow      Start the slideshow automatically
     -h, --help           Print this help
     -v, --version        Print version
