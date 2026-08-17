@@ -15,8 +15,13 @@ and audio decoding (played through [cpal](https://crates.io/crates/cpal)).
   your output device; videos without sound, or machines without an audio
   device, simply play silently. Audio never stalls the video, so playback
   stays smooth.
-- Videos with several audio/video streams get a **tracks** button in the
-  toolbar to switch between them (e.g. different languages or angles).
+- Videos with several audio/video/subtitle streams get a **tracks** button in
+  the toolbar to switch between them (e.g. different languages or angles);
+  selected subtitles are rendered over the video and disappear at their end
+  time. Initial tracks can be chosen at launch with `--audio-track` /
+  `--subtitle-track <index>`.
+- The video controls include a play/pause button and a seek bar you can click
+  or drag to jump to any time.
 - Slideshow mode (`S` or the `▶` button) auto-advances through images every
   few seconds (type a value in the `⚙` popup or pass `--interval`). Videos
   play to the end — the slideshow moves on only once a video finishes.
@@ -76,7 +81,9 @@ OPTIONS:
     -f, --fullscreen     Start in fullscreen
     -i, --interval <SECONDS>
                          Slideshow interval between items (default: 3.0)
-    -s, --slideshow      Start the slideshow automatically
+    -s, --slideshow     Start the slideshow automatically
+        --audio-track <N>    Initial audio track (stream index)
+        --subtitle-track <N> Initial subtitle track (stream index)
     -h, --help           Print this help
     -v, --version        Print version
 ```

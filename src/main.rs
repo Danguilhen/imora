@@ -30,6 +30,10 @@ OPTIONS:
     -i, --interval <SECONDS>
                         Slideshow interval between items (default: 3.0)
     -s, --slideshow     Start the slideshow automatically
+        --audio-track <N>
+                        Initial audio track (stream index; see ⓘ metadata)
+        --subtitle-track <N>
+                        Initial subtitle track (stream index)
     -h, --help          Print this help
     -v, --version       Print version
 ";
@@ -45,6 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut decorations = false;
     let mut start_slideshow = false;
     let mut slide_interval: f32 = 3.0;
+    let mut audio_track: Option<usize> = None;
+    let mut subtitle_track: Option<usize> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -69,6 +75,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 slide_interval = raw
                     .parse::<f32>()
                     .map_err(|_| format!("invalid slideshow interval: {raw}"))?;
+            }
+            "--audio-track" | "--subtitle-track" => {
+                let flag = args[i].clone();
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
+                let parsed = raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid track index for {flag}: {raw}"))?;
+                if flag == "--audio-track" {
+                    audio_track = Some(parsed);
+                } else {
+                    subtitle_track = Some(parsed);
+                }
             }
             arg if arg.starts_with('-') => {
                 eprintln!("unknown option: {arg}");
@@ -107,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fullscreen,
                 slide_interval,
                 start_slideshow,
+                audio_track,
+                subtitle_track,
             )))
         }),
     )

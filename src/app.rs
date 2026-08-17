@@ -115,6 +115,8 @@ pub struct ImoraApp {
     order: Vec<usize>,
     prev: Option<PrevFrame>,
     crossfade_t: f32,
+    pref_audio_track: Option<usize>,
+    pref_subtitle_track: Option<usize>,
 
     browser: Option<FolderBrowser>,
 
@@ -149,6 +151,8 @@ impl ImoraApp {
         start_fullscreen: bool,
         slide_interval: f32,
         start_slideshow: bool,
+        audio_track: Option<usize>,
+        subtitle_track: Option<usize>,
     ) -> Self {
         setup_style(&cc.egui_ctx);
 
@@ -210,6 +214,8 @@ impl ImoraApp {
             order: Vec::new(),
             prev: None,
             crossfade_t: 0.0,
+            pref_audio_track: audio_track,
+            pref_subtitle_track: subtitle_track,
             browser: None,
             show_info: false,
             info_loading: false,
@@ -369,6 +375,8 @@ impl ImoraApp {
         let tx = self.load_tx.clone();
         let slideshow = self.slideshow;
         let loop_media = self.loop_media;
+        let audio_track = self.pref_audio_track;
+        let subtitle_track = self.pref_subtitle_track;
         std::thread::spawn(move || {
             let data = match item.kind {
                 MediaKind::Image => match media::load_image(&item.path) {
@@ -378,7 +386,12 @@ impl ImoraApp {
                 MediaKind::Video => {
                     // In slideshow mode (or with loop off) videos play once and
                     // stop; otherwise they loop.
-                    LoadData::Video(VideoPlayer::open(item.path, loop_media && !slideshow))
+                    LoadData::Video(VideoPlayer::open(
+                        item.path,
+                        loop_media && !slideshow,
+                        audio_track,
+                        subtitle_track,
+                    ))
                 }
             };
             let _ = tx.send(LoadOutcome { gen, data });
@@ -947,9 +960,11 @@ impl ImoraApp {
                         // Track switching (only when the video has alternatives).
                         if let Some(Loaded::Video(player)) = &self.loaded {
                             let st = player.state();
-                            if st.video_tracks.len() > 1 || st.audio_tracks.len() > 1 {
-                                let tb =
-                                    icons::icon_button(ui, Icon::Tracks, "Audio / video tracks");
+                            if st.video_tracks.len() > 1
+                                || st.audio_tracks.len() > 1
+                                || !st.subtitle_tracks.is_empty()
+                            {
+                                let tb = icons::icon_button(ui, Icon::Tracks, "Tracks");
                                 egui::Popup::menu(&tb)
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                     .show(|ui| {
@@ -994,6 +1009,31 @@ impl ImoraApp {
                                                         Some(st.video_track),
                                                         Some(track.stream_index),
                                                     );
+                                                }
+                                            }
+                                            ui.add_space(6.0);
+                                        }
+                                        if !st.subtitle_tracks.is_empty() {
+                                            ui.label(
+                                                RichText::new("Subtitles").strong().size(13.0),
+                                            );
+                                            if ui
+                                                .selectable_label(
+                                                    st.subtitle_track.is_none(),
+                                                    "None",
+                                                )
+                                                .clicked()
+                                            {
+                                                player.set_subtitle(None);
+                                            }
+                                            for track in &st.subtitle_tracks {
+                                                let selected =
+                                                    Some(track.stream_index) == st.subtitle_track;
+                                                if ui
+                                                    .selectable_label(selected, &track.label)
+                                                    .clicked()
+                                                {
+                                                    player.set_subtitle(Some(track.stream_index));
                                                 }
                                             }
                                         }
@@ -1174,6 +1214,9 @@ impl ImoraApp {
                             Color32::from_white_alpha((alpha * 255.0) as u8),
                         );
                     }
+                    if let Some(text) = &st.subtitle {
+                        Self::paint_subtitle(&painter, rect, text);
+                    }
                     if alpha > 0.5 && self.seek_visible {
                         self.paint_controls(ui, &painter, rect, player, &st, fr.pts);
                     }
@@ -1286,9 +1329,46 @@ impl ImoraApp {
         } else {
             pts
         };
+
+        // Play / pause button.
+        let btn =
+            Rect::from_center_size(pos2(rect.min.x + 24.0, rect.max.y - 28.0), vec2(18.0, 18.0));
+        let btn_resp = ui.interact(btn.expand(4.0), ui.id().with("playpause"), Sense::click());
+        if btn_resp.hovered() {
+            painter.rect_filled(btn, 4.0, Color32::from_rgb(0x22, 0x27, 0x2f));
+        }
+        if st.playing {
+            painter.rect_filled(
+                Rect::from_center_size(btn.center() + vec2(-3.0, 0.0), vec2(2.6, 10.0)),
+                1.0,
+                TEXT,
+            );
+            painter.rect_filled(
+                Rect::from_center_size(btn.center() + vec2(3.0, 0.0), vec2(2.6, 10.0)),
+                1.0,
+                TEXT,
+            );
+        } else {
+            let c = btn.center();
+            let tri = vec![
+                c + vec2(-3.0, -5.0),
+                c + vec2(-3.0, 5.0),
+                c + vec2(5.0, 0.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(tri, TEXT, egui::Stroke::NONE));
+        }
+        if btn_resp.clicked() {
+            if st.playing {
+                player.pause();
+            } else {
+                player.play();
+            }
+        }
+
+        // Seek bar (after the button).
         let bar = Rect::from_min_size(
-            pos2(rect.min.x + 24.0, rect.max.y - 30.0),
-            vec2((rect.width() - 48.0).max(1.0), 4.0),
+            pos2(rect.min.x + 48.0, rect.max.y - 30.0),
+            vec2((rect.width() - 72.0).max(1.0), 4.0),
         );
         let resp = ui.interact(
             bar.expand(6.0),
@@ -1296,7 +1376,12 @@ impl ImoraApp {
             Sense::click_and_drag(),
         );
 
-        let frac = if self.scrub_active.get() {
+        // While pressed, scrub with the pointer; otherwise show playback
+        // position. (`is_pointer_button_down_on` also covers a plain click,
+        // which `drag_started` alone doesn't.)
+        let down = resp.is_pointer_button_down_on();
+        self.scrub_active.set(down);
+        let frac = if down {
             if let Some(p) = resp.interact_pointer_pos() {
                 self.scrub_frac
                     .set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
@@ -1305,16 +1390,7 @@ impl ImoraApp {
         } else {
             (pos as f32 / duration as f32).clamp(0.0, 1.0)
         };
-
-        if resp.drag_started() {
-            self.scrub_active.set(true);
-            if let Some(p) = resp.interact_pointer_pos() {
-                self.scrub_frac
-                    .set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
-            }
-        }
-        if resp.drag_stopped() || resp.clicked() {
-            self.scrub_active.set(false);
+        if resp.clicked() || resp.drag_stopped() {
             player.seek(self.scrub_frac.get() as f64 * duration);
         }
 
@@ -1335,6 +1411,30 @@ impl ImoraApp {
             label,
             FontId::monospace(12.0),
             MUTED,
+        );
+    }
+
+    /// Draw the current subtitle text near the bottom of the video.
+    fn paint_subtitle(painter: &egui::Painter, rect: Rect, text: &str) {
+        let max_width = (rect.width() * 0.8).max(240.0);
+        let galley = painter.layout(
+            text.to_string(),
+            FontId::proportional(18.0),
+            Color32::WHITE,
+            max_width,
+        );
+        let height = galley.size().y;
+        let top = (rect.max.y - height - 34.0).max(rect.min.y + 10.0);
+        let half = max_width / 2.0;
+        let bg = Rect::from_min_max(
+            pos2(rect.center().x - half - 12.0, top - 6.0),
+            pos2(rect.center().x + half + 12.0, top + height + 6.0),
+        );
+        painter.rect_filled(bg, 8.0, Color32::from_rgba_unmultiplied(0, 0, 0, 170));
+        painter.galley(
+            pos2(rect.center().x - galley.size().x / 2.0, top),
+            galley,
+            Color32::WHITE,
         );
     }
 

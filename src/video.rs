@@ -5,6 +5,7 @@
 //! sound card; the UI thread reads the latest frame each repaint.
 
 use ffmpeg_next as ffmpeg;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,10 @@ pub struct PlayerState {
     pub audio_tracks: Vec<TrackInfo>,
     pub video_track: usize,
     pub audio_track: Option<usize>,
+    /// Subtitle tracks, selection, and the currently visible subtitle text.
+    pub subtitle_tracks: Vec<TrackInfo>,
+    pub subtitle_track: Option<usize>,
+    pub subtitle: Option<String>,
 }
 
 #[derive(Clone)]
@@ -68,6 +73,7 @@ enum Cmd {
         video_track: Option<usize>,
         audio_track: Option<usize>,
     },
+    SetSubtitle(Option<usize>),
     Stop,
 }
 
@@ -80,8 +86,15 @@ pub struct VideoPlayer {
 
 impl VideoPlayer {
     /// `looping`: when `true` the video restarts at the end instead of
-    /// stopping and setting [`PlayerState::ended`].
-    pub fn open(path: PathBuf, looping: bool) -> Self {
+    /// stopping and setting [`PlayerState::ended`]. `audio_track` /
+    /// `subtitle_track` select the initial streams (by stream index; `None`
+    /// for audio uses the default track, `None` for subtitles disables them).
+    pub fn open(
+        path: PathBuf,
+        looping: bool,
+        audio_track: Option<usize>,
+        subtitle_track: Option<usize>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let frame = Arc::new(Mutex::new(Frame::default()));
         let state = Arc::new(Mutex::new(PlayerState {
@@ -97,13 +110,18 @@ impl VideoPlayer {
             audio_tracks: Vec::new(),
             video_track: 0,
             audio_track: None,
+            subtitle_tracks: Vec::new(),
+            subtitle_track: None,
+            subtitle: None,
         }));
         let f2 = Arc::clone(&frame);
         let s2 = Arc::clone(&state);
         let handle = std::thread::Builder::new()
             .name("imora-video".into())
             .spawn(move || {
-                if let Err(e) = decode_loop(&path, looping, &rx, &f2, &s2) {
+                if let Err(e) =
+                    decode_loop(&path, looping, audio_track, subtitle_track, &rx, &f2, &s2)
+                {
                     if let Ok(mut s) = s2.lock() {
                         s.loaded = true;
                         s.error = Some(e);
@@ -143,6 +161,11 @@ impl VideoPlayer {
             video_track,
             audio_track,
         });
+    }
+
+    /// Select a subtitle stream (`None` hides subtitles).
+    pub fn set_subtitle(&self, subtitle_track: Option<usize>) {
+        let _ = self.tx.send(Cmd::SetSubtitle(subtitle_track));
     }
 
     pub fn frame(&self) -> Frame {
@@ -244,6 +267,69 @@ impl AudioPlayer {
     }
 }
 
+/// Decodes text subtitles from the selected subtitle stream.
+struct SubtitlePlayer {
+    index: usize,
+    decoder: ffmpeg::codec::decoder::Subtitle,
+    frame: ffmpeg::Subtitle,
+    timebase: ffmpeg::Rational,
+}
+
+impl SubtitlePlayer {
+    fn try_new(input: &mut ffmpeg::format::context::Input, stream_index: usize) -> Option<Self> {
+        let stream = input.streams().find(|s| s.index() == stream_index)?;
+        let context = CodecContext::from_parameters(stream.parameters()).ok()?;
+        let decoder = context.decoder().subtitle().ok()?;
+        Some(Self {
+            index: stream_index,
+            decoder,
+            frame: ffmpeg::Subtitle::default(),
+            timebase: stream.time_base(),
+        })
+    }
+
+    /// Decode one packet; returns the event's start time (seconds) and text.
+    fn decode(&mut self, packet: &ffmpeg::packet::Packet) -> Option<(f64, f64, String)> {
+        let start = packet.pts().map(|pts| {
+            pts as f64 * self.timebase.numerator() as f64 / self.timebase.denominator() as f64
+        })?;
+        let end = start
+            + packet.duration() as f64 * self.timebase.numerator() as f64
+                / self.timebase.denominator() as f64;
+        if !self
+            .decoder
+            .decode(packet, &mut self.frame)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let mut lines = Vec::new();
+        for rect in self.frame.rects() {
+            let text = match rect {
+                ffmpeg::subtitle::Rect::Text(t) => t.get().to_string(),
+                ffmpeg::subtitle::Rect::Ass(a) => strip_ass(a.get()),
+                _ => continue,
+            };
+            if !text.trim().is_empty() {
+                lines.push(text);
+            }
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some((start, end, lines.join("\n")))
+        }
+    }
+}
+
+/// MKV subtitles often decode as ASS even when the file stores SRT: drop the
+/// `Layer,Style,Name,MarginL,MarginR,MarginV,Effect,` prefix and turn the
+/// `\N` newline markers into real newlines.
+fn strip_ass(line: &str) -> String {
+    let text = line.rsplit_once(",,").map(|(_, t)| t).unwrap_or(line);
+    text.replace("\\N", "\n").trim().to_string()
+}
+
 /// Rebuild the active video/audio decoders for the given streams and resync
 /// playback to the current position.
 #[allow(clippy::too_many_arguments)]
@@ -327,6 +413,8 @@ fn switch_tracks(
 fn decode_loop(
     path: &Path,
     looping: bool,
+    default_audio: Option<usize>,
+    default_subtitle: Option<usize>,
     rx: &Receiver<Cmd>,
     out: &Arc<Mutex<Frame>>,
     st: &Arc<Mutex<PlayerState>>,
@@ -336,13 +424,23 @@ fn decode_loop(
     // Enumerate the tracks so the UI can offer switching between them.
     let mut video_tracks: Vec<TrackInfo> = Vec::new();
     let mut audio_tracks: Vec<TrackInfo> = Vec::new();
+    let mut subtitle_tracks: Vec<TrackInfo> = Vec::new();
     for s in input.streams() {
         match s.parameters().medium() {
-            Type::Video => video_tracks.push(TrackInfo {
+            Type::Video => {
+                // Skip still images (e.g. MKV cover art) — they can't be played.
+                if is_playable_video(&s) {
+                    video_tracks.push(TrackInfo {
+                        stream_index: s.index(),
+                        label: stream_label(&s),
+                    });
+                }
+            }
+            Type::Audio => audio_tracks.push(TrackInfo {
                 stream_index: s.index(),
                 label: stream_label(&s),
             }),
-            Type::Audio => audio_tracks.push(TrackInfo {
+            Type::Subtitle => subtitle_tracks.push(TrackInfo {
                 stream_index: s.index(),
                 label: stream_label(&s),
             }),
@@ -353,10 +451,12 @@ fn decode_loop(
     let default_video = input.streams().best(Type::Video);
     let mut stream_idx = default_video
         .as_ref()
+        .filter(|s| is_playable_video(s))
         .map(|s| s.index())
         .or_else(|| video_tracks.first().map(|t| t.stream_index))
         .unwrap_or(0);
     let stream = default_video
+        .filter(|s| is_playable_video(s))
         .or_else(|| input.streams().find(|s| s.index() == stream_idx))
         .ok_or("no video stream")?;
     let mut timebase = stream.time_base();
@@ -364,11 +464,13 @@ fn decode_loop(
     let mut decoder = context.decoder().video().map_err(|e| e.to_string())?;
     let (mut vw, mut vh) = (decoder.width(), decoder.height());
     let duration = input.duration() as f64 / AV_TIME_BASE;
-    let mut audio_stream_idx = input
-        .streams()
-        .best(Type::Audio)
-        .map(|s| s.index())
-        .or_else(|| audio_tracks.first().map(|t| t.stream_index));
+    let mut audio_stream_idx = default_audio.or_else(|| {
+        input
+            .streams()
+            .best(Type::Audio)
+            .map(|s| s.index())
+            .or_else(|| audio_tracks.first().map(|t| t.stream_index))
+    });
 
     {
         let mut s = st.lock().unwrap();
@@ -382,6 +484,9 @@ fn decode_loop(
         s.audio_tracks = audio_tracks;
         s.video_track = stream_idx;
         s.audio_track = audio_stream_idx;
+        s.subtitle_tracks = subtitle_tracks;
+        s.subtitle_track = default_subtitle;
+        s.subtitle = None;
     }
 
     let mut scaler = ScalingContext::get(
@@ -398,6 +503,12 @@ fn decode_loop(
     // Optional audio: only active if the file has an audio track and we can
     // open an output device. Otherwise playback stays silent.
     let mut audio = AudioPlayer::try_new(&mut input, audio_stream_idx);
+
+    // Optional subtitles: decode text events when a track is selected.
+    let mut subtitle = default_subtitle.and_then(|idx| SubtitlePlayer::try_new(&mut input, idx));
+    let mut subtitle_stream_idx = default_subtitle;
+    let mut pending_subs: VecDeque<(f64, f64, String)> = VecDeque::new();
+    let mut current_sub_end: Option<f64> = None;
 
     let mut playing = true;
     let mut looping = looping;
@@ -416,22 +527,35 @@ fn decode_loop(
                 Ok(Cmd::SetTracks {
                     video_track,
                     audio_track,
-                }) => switch_tracks(
-                    &mut input,
-                    video_track,
-                    audio_track,
-                    &mut stream_idx,
-                    &mut timebase,
-                    &mut decoder,
-                    &mut scaler,
-                    &mut vw,
-                    &mut vh,
-                    &mut audio,
-                    &mut audio_stream_idx,
-                    st,
-                    &mut start_pts,
-                    &mut start_time,
-                ),
+                }) => {
+                    switch_tracks(
+                        &mut input,
+                        video_track,
+                        audio_track,
+                        &mut stream_idx,
+                        &mut timebase,
+                        &mut decoder,
+                        &mut scaler,
+                        &mut vw,
+                        &mut vh,
+                        &mut audio,
+                        &mut audio_stream_idx,
+                        st,
+                        &mut start_pts,
+                        &mut start_time,
+                    );
+                    clear_subs(st, &mut pending_subs, &mut current_sub_end);
+                }
+                Ok(Cmd::SetSubtitle(idx)) => {
+                    if idx != subtitle_stream_idx {
+                        subtitle = idx.and_then(|i| SubtitlePlayer::try_new(&mut input, i));
+                        subtitle_stream_idx = idx;
+                        clear_subs(st, &mut pending_subs, &mut current_sub_end);
+                        if let Ok(mut s) = st.lock() {
+                            s.subtitle_track = idx;
+                        }
+                    }
+                }
                 Ok(Cmd::Play(p)) => {
                     if playing != p {
                         playing = p;
@@ -451,6 +575,7 @@ fn decode_loop(
                                 if let Some(a) = audio.as_mut() {
                                     a.flush();
                                 }
+                                clear_subs(st, &mut pending_subs, &mut current_sub_end);
                             }
                             // Restart the pacing clock so we don't fast-forward
                             // to catch up with the paused time.
@@ -463,6 +588,7 @@ fn decode_loop(
                             if let Some(a) = audio.as_ref() {
                                 a.clear();
                             }
+                            clear_subs(st, &mut pending_subs, &mut current_sub_end);
                         }
                     }
                 }
@@ -482,6 +608,35 @@ fn decode_loop(
             if let Some(a) = audio.as_mut() {
                 a.flush();
             }
+            clear_subs(st, &mut pending_subs, &mut current_sub_end);
+        }
+
+        // Advance the subtitle display to the current position: show the
+        // newest event that has started, clear once its end time passes.
+        {
+            let position = st.lock().map(|s| s.position).unwrap_or(0.0);
+            let mut started: Option<(f64, String)> = None;
+            while let Some((start, _, _)) = pending_subs.front() {
+                if *start <= position {
+                    let (_, end, text) = pending_subs.pop_front().unwrap();
+                    started = Some((end, text));
+                } else {
+                    break;
+                }
+            }
+            if let Some((end, text)) = started {
+                current_sub_end = Some(end);
+                if let Ok(mut s) = st.lock() {
+                    s.subtitle = Some(text);
+                }
+            } else if let Some(end) = current_sub_end {
+                if position > end {
+                    current_sub_end = None;
+                    if let Ok(mut s) = st.lock() {
+                        s.subtitle = None;
+                    }
+                }
+            }
         }
 
         if !playing {
@@ -491,22 +646,35 @@ fn decode_loop(
                 Ok(Cmd::SetTracks {
                     video_track,
                     audio_track,
-                }) => switch_tracks(
-                    &mut input,
-                    video_track,
-                    audio_track,
-                    &mut stream_idx,
-                    &mut timebase,
-                    &mut decoder,
-                    &mut scaler,
-                    &mut vw,
-                    &mut vh,
-                    &mut audio,
-                    &mut audio_stream_idx,
-                    st,
-                    &mut start_pts,
-                    &mut start_time,
-                ),
+                }) => {
+                    switch_tracks(
+                        &mut input,
+                        video_track,
+                        audio_track,
+                        &mut stream_idx,
+                        &mut timebase,
+                        &mut decoder,
+                        &mut scaler,
+                        &mut vw,
+                        &mut vh,
+                        &mut audio,
+                        &mut audio_stream_idx,
+                        st,
+                        &mut start_pts,
+                        &mut start_time,
+                    );
+                    clear_subs(st, &mut pending_subs, &mut current_sub_end);
+                }
+                Ok(Cmd::SetSubtitle(idx)) => {
+                    if idx != subtitle_stream_idx {
+                        subtitle = idx.and_then(|i| SubtitlePlayer::try_new(&mut input, i));
+                        subtitle_stream_idx = idx;
+                        clear_subs(st, &mut pending_subs, &mut current_sub_end);
+                        if let Ok(mut s) = st.lock() {
+                            s.subtitle_track = idx;
+                        }
+                    }
+                }
                 Ok(Cmd::Play(p)) => {
                     playing = p;
                     if let Ok(mut s) = st.lock() {
@@ -523,6 +691,7 @@ fn decode_loop(
                             if let Some(a) = audio.as_mut() {
                                 a.flush();
                             }
+                            clear_subs(st, &mut pending_subs, &mut current_sub_end);
                         }
                         start_time = Instant::now();
                     }
@@ -540,6 +709,7 @@ fn decode_loop(
                     if let Some(a) = audio.as_mut() {
                         a.flush();
                     }
+                    clear_subs(st, &mut pending_subs, &mut current_sub_end);
                     if let Some(pts) = decode_until_frame(
                         &mut input,
                         stream_idx,
@@ -599,6 +769,15 @@ fn decode_loop(
                     a.send_packet(&packet);
                 }
             }
+            Some((stream, packet))
+                if subtitle.as_ref().is_some_and(|s| s.index == stream.index()) =>
+            {
+                if let Some(sub) = subtitle.as_mut() {
+                    if let Some((start, end, text)) = sub.decode(&packet) {
+                        pending_subs.push_back((start, end, text));
+                    }
+                }
+            }
             Some(_) => {}
             None => {
                 // End of file.
@@ -611,6 +790,7 @@ fn decode_loop(
                     if let Some(a) = audio.as_mut() {
                         a.flush();
                     }
+                    clear_subs(st, &mut pending_subs, &mut current_sub_end);
                 } else {
                     // Stop and report the end so e.g. the slideshow can move on.
                     if let Ok(mut s) = st.lock() {
@@ -621,6 +801,7 @@ fn decode_loop(
                     if let Some(a) = audio.as_ref() {
                         a.clear();
                     }
+                    clear_subs(st, &mut pending_subs, &mut current_sub_end);
                 }
             }
         }
@@ -724,6 +905,26 @@ pub fn grab_frame(path: &Path, max_dim: u32) -> Result<(Vec<u8>, u32, u32), Stri
         }
     }
     Err("no frame".into())
+}
+
+/// A video stream is playable if it declares a frame rate — still images
+/// (e.g. MKV cover art) report 0/0 and can't be played as video.
+fn is_playable_video(stream: &ffmpeg::format::stream::Stream) -> bool {
+    let rate = stream.avg_frame_rate();
+    rate.numerator() != 0 || rate.denominator() != 0
+}
+
+/// Drop queued subtitles and hide any currently displayed one.
+fn clear_subs(
+    st: &Arc<Mutex<PlayerState>>,
+    pending_subs: &mut VecDeque<(f64, f64, String)>,
+    current_sub_end: &mut Option<f64>,
+) {
+    pending_subs.clear();
+    *current_sub_end = None;
+    if let Ok(mut s) = st.lock() {
+        s.subtitle = None;
+    }
 }
 
 /// Human-readable label for a stream: "language · codec", or a fallback.
