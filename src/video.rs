@@ -195,6 +195,8 @@ struct AudioPlayer {
     resampler: Resampler,
     frame: AudioFrame,
     output: AudioOutput,
+    out_format: ffmpeg::format::Sample,
+    out_layout: ChannelLayout,
 }
 
 impl AudioPlayer {
@@ -234,6 +236,8 @@ impl AudioPlayer {
             resampler,
             frame: AudioFrame::empty(),
             output,
+            out_format: dst_format,
+            out_layout: dst_layout,
         })
     }
 
@@ -242,16 +246,25 @@ impl AudioPlayer {
             return;
         }
         while self.decoder.receive_frame(&mut self.frame).is_ok() {
-            let mut converted = AudioFrame::empty();
+            // Size the output from the rate ratio before resampling. `run`
+            // allocates an empty output frame from the *input* sample count,
+            // and `swr_convert_frame` then writes at most that many samples,
+            // keeping the rest in its internal delay — which is dropped when
+            // the resampler goes away. That made non-48 kHz tracks play back
+            // too fast (e.g. 22050 Hz audio at ~2.2x) and lose the tail.
+            let est = ((self.frame.samples() as u64 * self.output.sample_rate as u64)
+                / self.frame.rate().max(1) as u64)
+                .max(1) as usize;
+            let mut converted = AudioFrame::new(self.out_format, est, self.out_layout);
             if self.resampler.run(&self.frame, &mut converted).is_ok() {
                 // `plane::<f32>(0)` only exposes `nb_samples` (per-channel)
                 // values, but a packed frame holds `nb_samples × channels`
                 // interleaved samples — reading just the plane would drop half
                 // of every stereo frame. Read the whole buffer instead.
-                let bytes = converted.data(0);
-                let floats = unsafe {
-                    std::slice::from_raw_parts(bytes.as_ptr() as *const f32, bytes.len() / 4)
-                };
+                let count = converted.samples() * converted.channels() as usize;
+                let buf = converted.data(0);
+                let floats =
+                    unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, count) };
                 self.output.push(floats);
             }
         }
