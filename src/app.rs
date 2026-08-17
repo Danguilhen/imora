@@ -90,6 +90,7 @@ pub struct ImoraApp {
     video_last_pts: Cell<f64>,
     scrub_active: Cell<bool>,
     scrub_frac: Cell<f32>,
+    scrub_target: Cell<Option<f32>>,
 
     anim_idx: usize,
     anim_accum: f32,
@@ -193,6 +194,7 @@ impl ImoraApp {
             video_last_pts: Cell::new(-1.0),
             scrub_active: Cell::new(false),
             scrub_frac: Cell::new(0.0),
+            scrub_target: Cell::new(None),
             anim_idx: 0,
             anim_accum: 0.0,
             fullscreen: false,
@@ -298,6 +300,8 @@ impl ImoraApp {
         self.anim_idx = 0;
         self.anim_accum = 0.0;
         self.scrub_active = Cell::new(false);
+        self.scrub_frac = Cell::new(0.0);
+        self.scrub_target = Cell::new(None);
         self.strip_need_scroll = true;
     }
 
@@ -845,6 +849,11 @@ impl ImoraApp {
                     ui.label(RichText::new(truncate(&folder_text, 56)).color(MUTED));
                     ui.add_space(8.0);
                     ui.label(RichText::new(truncate(&self.current_name(), 40)).color(TEXT));
+                    ui.label(
+                        RichText::new(format!("{} / {}", self.index + 1, self.items.len()))
+                            .size(12.0)
+                            .color(MUTED),
+                    );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if icons::icon_button(ui, Icon::Fullscreen, "Fullscreen (F)").clicked() {
@@ -1234,21 +1243,6 @@ impl ImoraApp {
             }
         }
 
-        // Overlay: index + name (hidden in fullscreen).
-        if self.fade > 0.1 && !self.fullscreen {
-            let n = self.items.len();
-            let name = truncate(&self.current_name(), 60);
-            let label = format!("{} — {} / {}", name, self.index + 1, n);
-            let a = (self.fade * 255.0 * 0.9) as u8;
-            painter.text(
-                pos2(rect.center().x, rect.min.y + 20.0),
-                Align2::CENTER_TOP,
-                label,
-                FontId::proportional(13.0),
-                Color32::from_rgba_unmultiplied(0x8a, 0x90, 0x99, a),
-            );
-        }
-
         if Instant::now() < self.first_hint_until && self.items.len() > 1 && !self.fullscreen {
             painter.text(
                 pos2(rect.center().x, rect.max.y - 26.0),
@@ -1376,22 +1370,34 @@ impl ImoraApp {
             Sense::click_and_drag(),
         );
 
-        // While pressed, scrub with the pointer; otherwise show playback
-        // position. (`is_pointer_button_down_on` also covers a plain click,
-        // which `drag_started` alone doesn't.)
+        // While pressed, scrub with the pointer; otherwise show the playback
+        // position, keeping the last seek target visible until the player
+        // actually reaches it (`is_pointer_button_down_on` also covers a plain
+        // click, which `drag_started` alone doesn't).
         let down = resp.is_pointer_button_down_on();
         self.scrub_active.set(down);
-        let frac = if down {
+        if down {
             if let Some(p) = resp.interact_pointer_pos() {
                 self.scrub_frac
                     .set(((p.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
             }
+        }
+        let pos_frac = (pos as f32 / duration as f32).clamp(0.0, 1.0);
+        let frac = if down {
             self.scrub_frac.get()
+        } else if let Some(target) = self.scrub_target.get() {
+            if (target - pos_frac).abs() > 0.02 {
+                target
+            } else {
+                pos_frac
+            }
         } else {
-            (pos as f32 / duration as f32).clamp(0.0, 1.0)
+            pos_frac
         };
         if resp.clicked() || resp.drag_stopped() {
-            player.seek(self.scrub_frac.get() as f64 * duration);
+            let target = self.scrub_frac.get();
+            self.scrub_target.set(Some(target));
+            player.seek(target as f64 * duration);
         }
 
         painter.rect_filled(bar, 2.0, TRACK);

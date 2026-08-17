@@ -180,9 +180,11 @@ impl VideoPlayer {
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
         let _ = self.tx.send(Cmd::Stop);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        // Don't join: the decode thread may be busy opening a large file or
+        // the audio device, and joining on the UI thread would freeze arrow-key
+        // navigation while a video prepares. Stop is queued and the thread
+        // exits as soon as it can.
+        drop(self.handle.take());
     }
 }
 
