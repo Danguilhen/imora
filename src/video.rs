@@ -542,7 +542,10 @@ fn decode_loop(
     let mut pending_seek: Option<f64> = None;
     let mut start_pts = 0.0_f64;
     let mut start_time = Instant::now();
-    let mut start_consumed: u64 = 0;
+    // Anchor the pacing clock to the moment the audio device starts
+    // consuming, not to when decode_loop() was entered — the device opens
+    // earlier in AudioPlayer::try_new and may already be several ms ahead.
+    let mut start_consumed = audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
     let mut fv = Video::empty();
     let mut rgb = Video::empty();
     let mut last_stats = Instant::now();
@@ -794,7 +797,8 @@ fn decode_loop(
                         // audio and video in sync while never out-running the
                         // ring (which would drop and compress the audio).
                         let rate = a.output.sample_rate as f64 * a.output.channels as f64;
-                        let clock = (a.output.consumed() - start_consumed) as f64 / rate;
+                        let consumed_now = a.output.consumed();
+                        let clock = (consumed_now - start_consumed) as f64 / rate;
                         let ahead = target - clock;
                         if ahead > AV_LEAD_SECS {
                             std::thread::sleep(Duration::from_secs_f64(ahead - AV_LEAD_SECS));
