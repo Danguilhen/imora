@@ -195,6 +195,7 @@ struct AudioPlayer {
     resampler: Resampler,
     frame: AudioFrame,
     output: AudioOutput,
+    pushed: u64,
     out_format: ffmpeg::format::Sample,
     out_layout: ChannelLayout,
 }
@@ -236,6 +237,7 @@ impl AudioPlayer {
             resampler,
             frame: AudioFrame::empty(),
             output,
+            pushed: 0,
             out_format: dst_format,
             out_layout: dst_layout,
         })
@@ -266,6 +268,11 @@ impl AudioPlayer {
                 let floats =
                     unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, count) };
                 self.output.push(floats);
+                self.pushed += count as u64;
+                // Keep the decode thread from out-running the hardware: the
+                // ring only rides out jitter, so stall instead of dropping and
+                // compressing the audio when the device is behind.
+                self.output.wait_room(self.pushed);
             }
         }
     }
@@ -363,6 +370,7 @@ fn switch_tracks(
     st: &Arc<Mutex<PlayerState>>,
     start_pts: &mut f64,
     start_time: &mut Instant,
+    start_consumed: &mut u64,
 ) {
     let mut switched = false;
 
@@ -414,6 +422,7 @@ fn switch_tracks(
         decoder.flush();
         *start_pts = t;
         *start_time = Instant::now();
+        *start_consumed = audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
         if let Some(a) = audio.as_mut() {
             a.flush();
         }
@@ -424,6 +433,9 @@ fn switch_tracks(
         }
     }
 }
+
+/// How far ahead of the audio hardware clock the video may run.
+const AV_LEAD_SECS: f64 = 0.05;
 
 fn decode_loop(
     path: &Path,
@@ -530,8 +542,10 @@ fn decode_loop(
     let mut pending_seek: Option<f64> = None;
     let mut start_pts = 0.0_f64;
     let mut start_time = Instant::now();
+    let mut start_consumed: u64 = 0;
     let mut fv = Video::empty();
     let mut rgb = Video::empty();
+    let mut last_stats = Instant::now();
 
     loop {
         // Drain command queue.
@@ -558,6 +572,7 @@ fn decode_loop(
                         st,
                         &mut start_pts,
                         &mut start_time,
+                        &mut start_consumed,
                     );
                     clear_subs(st, &mut pending_subs, &mut current_sub_end);
                 }
@@ -595,6 +610,8 @@ fn decode_loop(
                             // Restart the pacing clock so we don't fast-forward
                             // to catch up with the paused time.
                             start_time = Instant::now();
+                            start_consumed =
+                                audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
                         } else {
                             // Pausing: remember where we stopped so a later
                             // resume continues smoothly from this position.
@@ -617,6 +634,7 @@ fn decode_loop(
             decoder.flush();
             start_pts = t;
             start_time = Instant::now();
+            start_consumed = audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
             if let Ok(mut s) = st.lock() {
                 s.ended = false;
             }
@@ -677,6 +695,7 @@ fn decode_loop(
                         st,
                         &mut start_pts,
                         &mut start_time,
+                        &mut start_consumed,
                     );
                     clear_subs(st, &mut pending_subs, &mut current_sub_end);
                 }
@@ -709,6 +728,7 @@ fn decode_loop(
                             clear_subs(st, &mut pending_subs, &mut current_sub_end);
                         }
                         start_time = Instant::now();
+                        start_consumed = audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
                     }
                 }
                 Ok(Cmd::Seek(t)) => {
@@ -718,6 +738,7 @@ fn decode_loop(
                     decoder.flush();
                     start_pts = t;
                     start_time = Instant::now();
+                    start_consumed = audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
                     if let Ok(mut s) = st.lock() {
                         s.ended = false;
                     }
@@ -767,9 +788,22 @@ fn decode_loop(
                         continue;
                     }
                     let target = secs - start_pts;
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    if target > elapsed {
-                        std::thread::sleep(Duration::from_secs_f64(target - elapsed));
+                    if let Some(a) = audio.as_ref() {
+                        // Pace against the audio hardware clock: the device
+                        // consumes samples at a steady rate, so this keeps
+                        // audio and video in sync while never out-running the
+                        // ring (which would drop and compress the audio).
+                        let rate = a.output.sample_rate as f64 * a.output.channels as f64;
+                        let clock = (a.output.consumed() - start_consumed) as f64 / rate;
+                        let ahead = target - clock;
+                        if ahead > AV_LEAD_SECS {
+                            std::thread::sleep(Duration::from_secs_f64(ahead - AV_LEAD_SECS));
+                        }
+                    } else {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        if target > elapsed {
+                            std::thread::sleep(Duration::from_secs_f64(target - elapsed));
+                        }
                     }
                     if scaler.run(&fv, &mut rgb).is_ok() {
                         *out.lock().unwrap() = frame_from(&rgb, secs);
@@ -802,6 +836,7 @@ fn decode_loop(
                     decoder.flush();
                     start_pts = 0.0;
                     start_time = Instant::now();
+                    start_consumed = audio.as_ref().map(|a| a.output.consumed()).unwrap_or(0);
                     if let Some(a) = audio.as_mut() {
                         a.flush();
                     }
@@ -818,6 +853,17 @@ fn decode_loop(
                     }
                     clear_subs(st, &mut pending_subs, &mut current_sub_end);
                 }
+            }
+        }
+
+        if last_stats.elapsed().as_secs_f64() > 3.0 {
+            last_stats = Instant::now();
+            if let Some(a) = audio.as_ref() {
+                let (drops, underruns) = a.output.stats();
+                log::info!(
+                    "audio stats: drops={drops} underruns={underruns} pos={:.1}s",
+                    st.lock().map(|s| s.position).unwrap_or(0.0)
+                );
             }
         }
     }

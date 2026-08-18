@@ -21,6 +21,7 @@ pub struct AudioOutput {
     #[allow(dead_code)]
     stream: cpal::Stream,
     buffer: Arc<AudioBuffer>,
+    consumed: Arc<std::sync::atomic::AtomicU64>,
     pub sample_rate: u32,
     pub channels: u16,
 }
@@ -28,6 +29,8 @@ pub struct AudioOutput {
 struct AudioBuffer {
     buf: Mutex<VecDeque<f32>>,
     capacity: usize,
+    drops: std::sync::atomic::AtomicU64,
+    underruns: std::sync::atomic::AtomicU64,
 }
 
 impl AudioBuffer {
@@ -35,6 +38,8 @@ impl AudioBuffer {
         Self {
             buf: Mutex::new(VecDeque::new()),
             capacity: ((rate as f32) * seconds.max(0.05)) as usize,
+            drops: std::sync::atomic::AtomicU64::new(0),
+            underruns: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -47,6 +52,8 @@ impl AudioBuffer {
         for &sample in samples {
             if buf.len() >= self.capacity {
                 buf.pop_front();
+                self.drops
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             buf.push_back(sample.clamp(-1.0, 1.0));
         }
@@ -66,10 +73,17 @@ impl AudioOutput {
         let config: cpal::StreamConfig = supported.into();
 
         let buffer = Arc::new(AudioBuffer::new(BUFFER_SECS, sample_rate));
+        let consumed = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let stream = match format {
-            SampleFormat::F32 => build_stream::<f32>(&device, config, Arc::clone(&buffer)),
-            SampleFormat::I16 => build_stream::<i16>(&device, config, Arc::clone(&buffer)),
-            SampleFormat::I32 => build_stream::<i32>(&device, config, Arc::clone(&buffer)),
+            SampleFormat::F32 => {
+                build_stream::<f32>(&device, config, Arc::clone(&buffer), Arc::clone(&consumed))
+            }
+            SampleFormat::I16 => {
+                build_stream::<i16>(&device, config, Arc::clone(&buffer), Arc::clone(&consumed))
+            }
+            SampleFormat::I32 => {
+                build_stream::<i32>(&device, config, Arc::clone(&buffer), Arc::clone(&consumed))
+            }
             _ => return None,
         }
         .ok()?;
@@ -79,6 +93,7 @@ impl AudioOutput {
         Some(Self {
             stream,
             buffer,
+            consumed,
             sample_rate,
             channels,
         })
@@ -89,9 +104,35 @@ impl AudioOutput {
         self.buffer.push(samples);
     }
 
+    /// Device samples consumed since start. The cpal callback runs at a steady
+    /// hardware rate, so this is an accurate playback clock.
+    pub fn consumed(&self) -> u64 {
+        self.consumed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Block until the device has consumed enough for `pushed` total samples to
+    /// fit in the ring, so the decode thread never runs more than the buffer
+    /// capacity ahead of the hardware (which would drop and compress audio).
+    pub fn wait_room(&self, pushed: u64) {
+        let cap = self.buffer.capacity as u64;
+        while pushed.saturating_sub(self.consumed()) > cap {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     /// Drop all buffered audio (pause / seek / loop / end).
     pub fn clear(&self) {
         self.buffer.buf.lock().unwrap().clear();
+    }
+
+    /// Number of dropped (overrun) and missed (underrun) samples since start.
+    pub fn stats(&self) -> (u64, u64) {
+        (
+            self.buffer.drops.load(std::sync::atomic::Ordering::Relaxed),
+            self.buffer
+                .underruns
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 }
 
@@ -121,6 +162,7 @@ fn build_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     buffer: Arc<AudioBuffer>,
+    consumed: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -128,7 +170,14 @@ where
     device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            consumed.fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
             let mut buf = buffer.buf.lock().unwrap();
+            let underrun = data.iter().any(|_| buf.is_empty());
+            if underrun {
+                buffer
+                    .underruns
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             for slot in data.iter_mut() {
                 let sample = buf.pop_front().unwrap_or(0.0);
                 *slot = T::from_sample(sample);
