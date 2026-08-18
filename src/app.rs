@@ -118,6 +118,8 @@ pub struct ImoraApp {
     crossfade_t: f32,
     pref_audio_track: Option<usize>,
     pref_subtitle_track: Option<usize>,
+    subtitle_scale: f32,
+    subtitle_scale_text: String,
 
     browser: Option<FolderBrowser>,
 
@@ -218,6 +220,8 @@ impl ImoraApp {
             crossfade_t: 0.0,
             pref_audio_track: audio_track,
             pref_subtitle_track: subtitle_track,
+            subtitle_scale: 1.0,
+            subtitle_scale_text: "100".to_string(),
             browser: None,
             show_info: false,
             info_loading: false,
@@ -955,6 +959,31 @@ impl ImoraApp {
                                 }
 
                                 ui.add_space(6.0);
+                                ui.separator();
+                                ui.label(RichText::new("Subtitles").strong().size(13.0));
+                                if ui.memory(|m| m.focused().is_none()) {
+                                    self.subtitle_scale_text =
+                                        format!("{}", (self.subtitle_scale * 100.0).round());
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut self.subtitle_scale, 0.5..=3.0)
+                                            .logarithmic(true)
+                                            .text("Size"),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Size %");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.subtitle_scale_text)
+                                            .desired_width(50.0),
+                                    );
+                                });
+                                if let Ok(v) = self.subtitle_scale_text.trim().parse::<f32>() {
+                                    self.subtitle_scale = (v / 100.0).clamp(0.5, 3.0);
+                                }
+
+                                ui.add_space(6.0);
                                 let start = if self.slideshow {
                                     "Stop slideshow"
                                 } else {
@@ -1224,7 +1253,7 @@ impl ImoraApp {
                         );
                     }
                     if let Some(text) = &st.subtitle {
-                        Self::paint_subtitle(&painter, rect, text);
+                        Self::paint_subtitle(&painter, rect, text, self.subtitle_scale);
                     }
                     if alpha > 0.5 && self.seek_visible {
                         self.paint_controls(ui, &painter, rect, player, &st, fr.pts);
@@ -1421,11 +1450,12 @@ impl ImoraApp {
     }
 
     /// Draw the current subtitle text near the bottom of the video.
-    fn paint_subtitle(painter: &egui::Painter, rect: Rect, text: &str) {
+    fn paint_subtitle(painter: &egui::Painter, rect: Rect, text: &str, scale: f32) {
         let max_width = (rect.width() * 0.8).max(240.0);
+        let size = (18.0 * scale).clamp(10.0, 96.0);
         let galley = painter.layout(
             text.to_string(),
-            FontId::proportional(18.0),
+            FontId::proportional(size),
             Color32::WHITE,
             max_width,
         );
