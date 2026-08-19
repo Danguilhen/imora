@@ -20,7 +20,8 @@ USAGE:
     imora [OPTIONS] [FOLDER]
 
 ARGS:
-    <FOLDER>    Folder to open at launch
+    <FOLDER>    Folder to open at launch; a network stream URL
+                (https://, rtsp://, …) plays it directly
 
 OPTIONS:
     -d, --decorations   Show window decorations (minimize/maximize/close).
@@ -36,6 +37,10 @@ OPTIONS:
                         Initial subtitle track (stream index)
     -h, --help          Print this help
     -v, --version       Print version
+
+NOTES:
+    Paste a network stream URL (Ctrl+V) to play it directly, like mpv.
+    URLs from streaming sites (YouTube etc.) need yt-dlp installed.
 ";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -45,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = ffmpeg_next::init();
 
     let mut folder: Option<PathBuf> = None;
+    let mut url: Option<String> = None;
     let mut fullscreen = false;
     let mut decorations = false;
     let mut start_slideshow = false;
@@ -97,11 +103,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(2);
             }
             arg => {
-                if folder.is_some() {
-                    eprintln!("expected a single folder argument");
+                if folder.is_some() || url.is_some() {
+                    eprintln!("expected a single folder or URL argument");
                     std::process::exit(2);
                 }
-                folder = Some(PathBuf::from(arg));
+                match media::as_url(arg) {
+                    Some(u) => url = Some(u.to_string()),
+                    None => folder = Some(PathBuf::from(arg)),
+                }
             }
         }
         i += 1;
@@ -122,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "imora",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(app::ImoraApp::new(
+            let mut app = app::ImoraApp::new(
                 cc,
                 folder,
                 fullscreen,
@@ -130,7 +139,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 start_slideshow,
                 audio_track,
                 subtitle_track,
-            )))
+            );
+            if let Some(u) = url.as_deref() {
+                app.open_url(u);
+            }
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| e.into())

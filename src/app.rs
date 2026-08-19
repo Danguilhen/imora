@@ -285,6 +285,25 @@ impl ImoraApp {
         self.browser = Some(FolderBrowser::new(start));
     }
 
+    /// Open a network stream URL (http/https/rtsp/…) as a single-item
+    /// playlist; ffmpeg decodes straight from the stream.
+    pub(crate) fn open_url(&mut self, url: &str) {
+        self.folder = None;
+        self.items = vec![MediaItem {
+            path: PathBuf::from(url),
+            kind: MediaKind::Video,
+            name: url.to_string(),
+        }];
+        self.index = 0;
+        self.thumbs.clear();
+        self.pending_thumbs.clear();
+        self.prev = None;
+        self.build_order();
+        self.ensure_index_in_order();
+        self.reset_view();
+        self.spawn_load();
+    }
+
     fn open_externally(&self) {
         if let Some(item) = self.items.get(self.index) {
             let _ = std::process::Command::new("xdg-open")
@@ -392,14 +411,36 @@ impl ImoraApp {
                     Err(e) => LoadData::Failed(format!("{} — {e}", item.name)),
                 },
                 MediaKind::Video => {
-                    // In slideshow mode (or with loop off) videos play once and
-                    // stop; otherwise they loop.
-                    LoadData::Video(VideoPlayer::open(
-                        item.path,
-                        loop_media && !slideshow,
-                        audio_track,
-                        subtitle_track,
-                    ))
+                    // Site URLs (YouTube etc.) must be resolved to a real
+                    // stream first, like mpv's ytdl hook; direct links and
+                    // plain streams play as-is.
+                    let mut path = item.path.clone();
+                    let mut fail: Option<String> = None;
+                    if let Some(u) = media::as_url(&path.to_string_lossy()) {
+                        // Case-insensitive: pasted URLs may arrive as HTTPS://
+                        if u.len() >= 4
+                            && u[..4].eq_ignore_ascii_case("http")
+                            && !media::looks_like_media_file(u)
+                        {
+                            match media::resolve_stream(u) {
+                                Ok(resolved) => path = PathBuf::from(resolved),
+                                Err(e) => fail = Some(format!("{} — {e}", item.name)),
+                            }
+                        }
+                    }
+                    match fail {
+                        Some(e) => LoadData::Failed(e),
+                        None => {
+                            // In slideshow mode (or with loop off) videos play
+                            // once and stop; otherwise they loop.
+                            LoadData::Video(VideoPlayer::open(
+                                path,
+                                loop_media && !slideshow,
+                                audio_track,
+                                subtitle_track,
+                            ))
+                        }
+                    }
                 }
             };
             let _ = tx.send(LoadOutcome { gen, data });
@@ -620,6 +661,28 @@ impl ImoraApp {
         }
     }
 
+    /// Play a pasted network stream URL, like piping one into mpv. Text
+    /// fields (path bar, settings) keep their own pastes.
+    fn handle_paste(&mut self, ctx: &egui::Context) {
+        if self.browser.is_some() || ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        let pasted = ctx.input(|i| {
+            i.events.iter().rev().find_map(|e| match e {
+                egui::Event::Paste(text) => Some(text.clone()),
+                _ => None,
+            })
+        });
+        // Clipboards often carry extra prose or line breaks around the link;
+        // play the first whitespace-separated token that is a URL.
+        let url = pasted
+            .as_deref()
+            .and_then(|text| text.split_whitespace().find_map(media::as_url));
+        if let Some(url) = url {
+            self.open_url(url);
+        }
+    }
+
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
         // Base the toggle on the actual window state so external fullscreen
         // (e.g. a compositor keybind) is respected too.
@@ -684,6 +747,10 @@ impl ImoraApp {
         let hi = (pos + 13).min(n);
         for k in lo..hi {
             let item = &self.items[self.order[k]];
+            // Network streams have no cheap local thumbnail; skip them.
+            if media::as_url(&item.path.to_string_lossy()).is_some() {
+                continue;
+            }
             if self.thumbs.contains_key(&item.path) || self.pending_thumbs.contains(&item.path) {
                 continue;
             }
@@ -1568,6 +1635,7 @@ impl eframe::App for ImoraApp {
         }
 
         self.handle_drops(ctx);
+        self.handle_paste(ctx);
         // While the folder browser is open, it owns the keys and the pointer
         // (arrows navigate its list, Enter confirms the folder, typing goes
         // to its path field).

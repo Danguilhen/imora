@@ -51,6 +51,9 @@
 
         # --- Misc helpers used at runtime ---
         xdg-utils
+
+        # --- Stream URL resolution (YouTube etc., see media.rs::resolve_stream) ---
+        yt-dlp
       ];
     in
     {
@@ -120,10 +123,12 @@
               pkg-config
               clang
               copyDesktopItems
+              makeWrapper
             ];
 
             buildInputs = with pkgs; [
               ffmpeg_8
+              alsa-lib
               libGL
               libxkbcommon
               wayland
@@ -146,6 +151,10 @@
             # runtime lib dir to the RUNPATH explicitly.
             postFixup = ''
               patchelf --add-rpath "${runtimeLibs}" "$out/bin/imora"
+              # imora shells out to yt-dlp by name for streaming-site URLs
+              # (media.rs::resolve_stream); put it on the binary's PATH.
+              wrapProgram "$out/bin/imora" \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.yt-dlp ]}
             '';
 
             desktopItems = [
