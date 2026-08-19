@@ -961,28 +961,29 @@ impl ImoraApp {
                                 ui.add_space(6.0);
                                 ui.separator();
                                 ui.label(RichText::new("Subtitles").strong().size(13.0));
-                                if ui.memory(|m| m.focused().is_none()) {
-                                    self.subtitle_scale_text =
-                                        format!("{}", (self.subtitle_scale * 100.0).round());
-                                }
                                 ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Slider::new(&mut self.subtitle_scale, 0.5..=3.0)
-                                            .logarithmic(true)
-                                            .text("Size"),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Size %");
-                                    ui.add(
+                                    ui.label("Size");
+                                    let slider = ui.add(egui::Slider::new(
+                                        &mut self.subtitle_scale,
+                                        0.5..=3.0,
+                                    ));
+                                    if slider.changed() {
+                                        self.subtitle_scale_text =
+                                            format!("{}", (self.subtitle_scale * 100.0).round());
+                                    }
+                                    let resp = ui.add(
                                         egui::TextEdit::singleline(&mut self.subtitle_scale_text)
                                             .desired_width(50.0),
                                     );
+                                    if resp.lost_focus() {
+                                        if let Ok(v) =
+                                            self.subtitle_scale_text.trim().parse::<f32>()
+                                        {
+                                            self.subtitle_scale = (v / 100.0).clamp(0.5, 3.0);
+                                        }
+                                    }
+                                    ui.label("%");
                                 });
-                                if let Ok(v) = self.subtitle_scale_text.trim().parse::<f32>() {
-                                    self.subtitle_scale = (v / 100.0).clamp(0.5, 3.0);
-                                }
-
                                 ui.add_space(6.0);
                                 let start = if self.slideshow {
                                     "Stop slideshow"
@@ -1461,12 +1462,6 @@ impl ImoraApp {
         );
         let height = galley.size().y;
         let top = (rect.max.y - height - 34.0).max(rect.min.y + 10.0);
-        let half = max_width / 2.0;
-        let bg = Rect::from_min_max(
-            pos2(rect.center().x - half - 12.0, top - 6.0),
-            pos2(rect.center().x + half + 12.0, top + height + 6.0),
-        );
-        painter.rect_filled(bg, 8.0, Color32::from_rgba_unmultiplied(0, 0, 0, 170));
         painter.galley(
             pos2(rect.center().x - galley.size().x / 2.0, top),
             galley,

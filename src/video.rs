@@ -623,7 +623,6 @@ fn decode_loop(
                             if let Some(a) = audio.as_ref() {
                                 a.clear();
                             }
-                            clear_subs(st, &mut pending_subs, &mut current_sub_end);
                         }
                     }
                 }
