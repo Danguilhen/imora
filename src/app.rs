@@ -1569,7 +1569,8 @@ impl eframe::App for ImoraApp {
 
         self.handle_drops(ctx);
         // While the folder browser is open, it owns the keys and the pointer
-        // (arrows/Enter navigate its list, typing goes to its path field).
+        // (arrows navigate its list, Enter confirms the folder, typing goes
+        // to its path field).
         if self.browser.is_none() {
             self.handle_keys(ctx);
             self.handle_pointer(ctx);

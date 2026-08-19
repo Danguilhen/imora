@@ -95,11 +95,16 @@ impl FolderBrowser {
                 if down {
                     self.select(self.selected + 1);
                 }
-                if right || (enter && !go) {
+                if right {
                     self.enter_selected();
                 }
                 if left {
                     self.up();
+                }
+                // Enter confirms the folder being browsed (same as "Open");
+                // while typing, Enter is handled by the path field above.
+                if enter && !go {
+                    action = BrowserAction::Open(self.cwd.clone());
                 }
             }
             if esc {
@@ -155,7 +160,11 @@ impl FolderBrowser {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
-            if ui.button("Open").clicked() {
+            if ui
+                .button("Open")
+                .on_hover_text("Load this folder (Enter)")
+                .clicked()
+            {
                 action = BrowserAction::Open(self.cwd.clone());
             }
             if ui.button("Cancel").clicked() {
@@ -316,6 +325,52 @@ mod tests {
         });
         // The test has no renderer to apply texture deltas to.
         output.textures_delta.clear();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Feed a single key press through a real egui pass and return the
+    /// browser's action.
+    fn press_key(browser: &mut FolderBrowser, key: egui::Key) -> BrowserAction {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut action = BrowserAction::None;
+        let mut output = ctx.run_ui(input, |ui| {
+            action = browser.show(ui.ctx());
+        });
+        output.textures_delta.clear();
+        action
+    }
+
+    #[test]
+    fn enter_opens_current_folder_and_arrows_navigate() {
+        let dir = std::env::temp_dir().join("imora-browser-keys");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("alpha")).unwrap();
+        std::fs::create_dir_all(dir.join("beta")).unwrap();
+
+        let mut browser = FolderBrowser::new(dir.clone());
+
+        // ArrowRight descends into the highlighted entry (alpha).
+        let _ = press_key(&mut browser, egui::Key::ArrowRight);
+        assert!(browser.cwd.ends_with("alpha"));
+
+        // ArrowLeft goes back up.
+        let _ = press_key(&mut browser, egui::Key::ArrowLeft);
+        assert_eq!(browser.cwd, dir);
+
+        // Enter confirms the browsed folder, like the "Open" button.
+        let action = press_key(&mut browser, egui::Key::Enter);
+        assert_eq!(action, BrowserAction::Open(dir.clone()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
