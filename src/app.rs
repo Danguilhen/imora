@@ -76,6 +76,9 @@ pub struct ImoraApp {
     pan: Vec2,
     dragging: bool,
     last_drag: Pos2,
+    /// Press origin while a possible window drag is armed (None once pan
+    /// takes over or the button is released).
+    win_press: Option<Pos2>,
 
     fade: f32,
 
@@ -185,6 +188,7 @@ impl ImoraApp {
             pan: Vec2::ZERO,
             dragging: false,
             last_drag: Pos2::ZERO,
+            win_press: None,
             fade: 0.0,
             show_strip: false,
             strip_need_scroll: true,
@@ -639,14 +643,36 @@ impl ImoraApp {
         if primary_pressed {
             self.dragging = true;
             self.last_drag = hover;
+            // The window is borderless, so give empty-canvas drags to the
+            // compositor as a window move. Zoomed-in panning keeps priority,
+            // and presses on the thumbnail strip stay selection clicks.
+            let is_fullscreen = ctx
+                .input(|i| i.viewport().fullscreen)
+                .unwrap_or(self.fullscreen);
+            let can_move_window = self.browser.is_none()
+                && !is_fullscreen
+                && self.zoom <= 1.0
+                && hover.y < screen.height() - strip_h;
+            self.win_press = can_move_window.then_some(hover);
         }
         if primary_released {
             self.dragging = false;
+            self.win_press = None;
         }
         if self.dragging && primary_down {
-            let d = hover - self.last_drag;
-            self.pan += d;
-            self.last_drag = hover;
+            // A small slop keeps plain clicks and double-clicks working
+            // before the move grabs the pointer.
+            if let Some(press) = self.win_press {
+                if (hover - press).length() > 8.0 {
+                    self.win_press = None;
+                    self.dragging = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+            } else {
+                let d = hover - self.last_drag;
+                self.pan += d;
+                self.last_drag = hover;
+            }
         }
     }
 
